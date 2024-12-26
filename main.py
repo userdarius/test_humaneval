@@ -29,7 +29,7 @@ Answer:"""
 
         with torch.no_grad():
             outputs = model.generate(
-                inputs.input_ids,
+                inputs["input_ids"],
                 max_new_tokens=512,
                 temperature=0.1,
                 do_sample=False,
