@@ -1,0 +1,8 @@
+transformers 
+datasets 
+wandb 
+huggingface_hub 
+evaluate
+bitsandbytes
+accelerate
+tiktoken
