@@ -23,6 +23,10 @@ Answer:"""
 
         # Generate response
         inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
+        # Move input tensors to the same device as the model's first parameter
+        device = next(model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
         with torch.no_grad():
             outputs = model.generate(
                 inputs.input_ids,
@@ -67,9 +71,7 @@ def main():
     logging.info("Loading model and tokenizer...")
     model, tokenizer = load_model_and_tokenizer(model_name)
 
-    # Move model to GPU if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
+    # No need to manually move model to device since we're using device_map="auto"
 
     # Evaluate
     logging.info("Starting evaluation...")
