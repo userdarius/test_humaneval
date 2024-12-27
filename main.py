@@ -86,12 +86,12 @@ def evaluate_model(model, tokenizer, dataset, num_samples=5):
         entry_point = item["entry_point"]
         test_code = item["test_code"]
 
-        # Improved prompt with stricter instructions and function signature
-        prompt = f"""Complete the following Python function. Only write the function implementation, nothing else.
+        # Modified prompt to focus on implementation
+        prompt = f"""Write a complete implementation for this Python function. Include the full implementation with proper indentation.
 
 {question}
 
-Complete the implementation below:
+Your implementation:
 def {entry_point}"""
 
         try:
@@ -106,10 +106,10 @@ def {entry_point}"""
                     input_ids,
                     attention_mask=attention_mask,
                     max_new_tokens=512,
-                    do_sample=False,  # Disable sampling for more deterministic output
-                    temperature=0.1,
-                    num_beams=5,      # Use beam search
-                    early_stopping=True,
+                    do_sample=True,     # Enable sampling
+                    temperature=0.2,    # Low temperature for focused output
+                    top_p=0.95,
+                    num_beams=5,        # Use beam search
                     pad_token_id=tokenizer.eos_token_id,
                 )
 
@@ -131,6 +131,22 @@ def {entry_point}"""
                 total += 1
                 continue
 
+            # Fix indentation in the generated code
+            lines = generated_code.split('\n')
+            fixed_lines = []
+            base_indent = None
+            for line in lines:
+                if line.strip():
+                    if base_indent is None and line.startswith('def'):
+                        base_indent = len(line) - len(line.lstrip())
+                    if base_indent is not None:
+                        # Remove base indentation and add 4 spaces for proper indentation
+                        stripped = line[base_indent:] if line.startswith(' ' * base_indent) else line
+                        fixed_lines.append('    ' + stripped if stripped.strip() and not stripped.startswith('def') else stripped)
+            
+            fixed_code = '\n'.join(fixed_lines)
+            logging.info(f"\nFixed code:\n{fixed_code}\n")
+
             # Create test environment
             test_env = {
                 '__builtins__': __builtins__,
@@ -144,15 +160,21 @@ def {entry_point}"""
             }
 
             # Execute function definition
-            exec(generated_code, test_env)
-            
+            try:
+                exec(fixed_code, test_env)
+            except Exception as e:
+                logging.error(f"Error in function definition: {e}")
+                total += 1
+                continue
+
             # Set the candidate for test cases
             test_env['candidate'] = test_env[entry_point]
 
-            # Execute test cases
+            # Execute test cases with fixed indentation
             test_results = []
             for test_case in test_code.split('\n'):
-                if test_case.strip().startswith('assert'):
+                test_case = test_case.strip()  # Remove any indentation
+                if test_case.startswith('assert'):
                     try:
                         exec(test_case, test_env)
                         test_results.append(True)
