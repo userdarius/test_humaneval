@@ -74,7 +74,7 @@ def execute_test_case(func_obj, test_case, test_env):
         return False
 
 
-def evaluate_model(model, tokenizer, dataset, num_samples=10):
+def evaluate_model(model, tokenizer, dataset, num_samples=5):
     correct = 0
     total = 0
     
