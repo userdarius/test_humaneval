@@ -91,10 +91,9 @@ def evaluate_model(model, tokenizer, dataset, num_samples=5):
         # Improved prompt with explicit structure and example
         prompt = f"""Write a complete Python function implementation. Follow this exact structure:
 
-1. Function signature (with type hints)
-2. Docstring
-3. Function body with implementation
-4. Return statement
+1. Function signature (with type hints, no docstring)
+2. Function body with implementation
+3. Return statement
 
 Here is the function to implement:
 {question}
