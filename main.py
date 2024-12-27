@@ -17,8 +17,22 @@ logging.basicConfig(level=logging.INFO)
 def extract_function(code_string, function_name):
     """Extract a function definition from a code string."""
     try:
-        # Parse the code into an AST
-        tree = ast.parse(code_string)
+        # Clean up the code string
+        code_string = code_string.strip()
+        
+        # If the code starts with the function definition, return it directly
+        if code_string.startswith(f'def {function_name}'):
+            return code_string
+        
+        # Try parsing as AST
+        try:
+            tree = ast.parse(code_string)
+        except SyntaxError:
+            # Try adding a newline at the start in case indentation is wrong
+            try:
+                tree = ast.parse('\n' + code_string)
+            except SyntaxError:
+                return None
 
         # Find the function definition
         for node in ast.walk(tree):
@@ -33,6 +47,7 @@ def extract_function(code_string, function_name):
                 return function_code
 
         return None
+        
     except Exception as e:
         logging.error(f"Error extracting function: {e}")
         return None
@@ -67,12 +82,13 @@ def evaluate_model(model, tokenizer, dataset, num_samples=10):
         entry_point = item["entry_point"]
         test_code = item["test_code"]
 
-        # Prepare prompt
-        prompt = f"""Write Python code to solve this problem. Only provide the code without any explanations.
+        # Prepare prompt with more explicit formatting instructions
+        prompt = f"""Write a Python function that solves this problem. Only provide the function implementation without any explanations or additional code.
 
 {question}
 
-Answer:"""
+Write your solution here, starting with 'def {entry_point}':
+"""
 
         # Generate response
         try:
@@ -97,6 +113,15 @@ Answer:"""
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
             generated_code = response[len(prompt):].strip()
             
+            # Clean up the generated code
+            generated_code = generated_code.strip('`').strip()  # Remove any markdown backticks
+            if not generated_code.startswith('def'):
+                # Try to find the function definition
+                if f'def {entry_point}' in generated_code:
+                    generated_code = generated_code[generated_code.find(f'def {entry_point}'):]
+            
+            logging.info(f"\nGenerated code:\n{generated_code}\n")
+            
             if not generated_code:
                 logging.error("Model generated empty response")
                 total += 1
@@ -111,9 +136,13 @@ Answer:"""
             # Extract the function from the generated code
             func_code = extract_function(generated_code, entry_point)
             if func_code is None:
-                logging.info(f"Could not find function {entry_point} in generated code")
-                total += 1
-                continue
+                # Try to use the entire generated code if it starts with 'def'
+                if generated_code.strip().startswith('def'):
+                    func_code = generated_code
+                else:
+                    logging.info(f"Could not find function {entry_point} in generated code")
+                    total += 1
+                    continue
 
             # Create a new namespace for the function
             namespace = {}
@@ -178,7 +207,7 @@ def assert_wrapper(condition, *args, **kwargs):
 
 def main():
     # Model parameters
-    model_name = "meta-llama/Llama-3.2-3b"  # need to add HF_TOKEN 
+    model_name = "meta-llama/Llama-3.2-3b"  # need to add HF_TOKEN
 
     # Load dataset
     dataset = get_dataset("openai_humaneval", seed=42)  
