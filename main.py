@@ -86,23 +86,14 @@ def evaluate_model(model, tokenizer, dataset, num_samples=10):
         entry_point = item["entry_point"]
         test_code = item["test_code"]
 
-        # Improved prompt with clear instructions and example format
-        prompt = f"""Write a complete Python function to solve this programming problem. Include the full implementation.
+        # Improved prompt with stricter instructions and function signature
+        prompt = f"""Complete the following Python function. Only write the function implementation, nothing else.
 
-Problem:
 {question}
 
-Write your solution below, starting with the function definition 'def {entry_point}'. Do not include any comments or test cases.
-
-Example format:
-def example_function(arg1: type1, arg2: type2) -> return_type:
-    # Implementation
-    return result
-
-Your solution:
+Complete the implementation below:
 def {entry_point}"""
 
-        # Generate response
         try:
             encoded_input = tokenizer(prompt, return_tensors="pt", truncation=True)
             input_ids = encoded_input['input_ids'].to(device)
@@ -115,128 +106,70 @@ def {entry_point}"""
                     input_ids,
                     attention_mask=attention_mask,
                     max_new_tokens=512,
-                    do_sample=True,
-                    temperature=0.2,  # Lower temperature for more focused outputs
-                    top_p=0.95,
-                    top_k=50,        # Add top_k sampling
-                    num_return_sequences=1,
+                    do_sample=False,  # Disable sampling for more deterministic output
+                    temperature=0.1,
+                    num_beams=5,      # Use beam search
+                    early_stopping=True,
                     pad_token_id=tokenizer.eos_token_id,
-                    repetition_penalty=1.2,
-                    length_penalty=1.0,
-                    min_new_tokens=10,  # Ensure some minimum output
-                    eos_token_id=tokenizer.eos_token_id,
-                    early_stopping=True
                 )
 
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
             
-            # Extract everything after "Your solution:"
-            if "Your solution:" in response:
-                generated_code = response.split("Your solution:")[-1].strip()
+            # Extract just the function implementation
+            if "def " + entry_point in response:
+                generated_code = response[response.find("def " + entry_point):]
+                # Remove anything after the function (like test cases)
+                if "\n\n" in generated_code:
+                    generated_code = generated_code.split("\n\n")[0]
             else:
                 generated_code = response[len(prompt):].strip()
+
+            logging.info(f"\nGenerated code:\n{generated_code}\n")
             
-            # Clean up the generated code
-            generated_code = generated_code.strip('`').strip()
-            
-            # Log the full interaction for debugging
-            logging.info(f"\nPrompt:\n{prompt}\n")
-            logging.info(f"Raw response:\n{response}\n")
-            logging.info(f"Extracted code:\n{generated_code}\n")
-            
-            if not generated_code or not generated_code.startswith("def"):
-                logging.error("Invalid code generation")
+            if not generated_code or "pass" in generated_code:
+                logging.error("Invalid or empty implementation")
                 total += 1
                 continue
 
-            # Extract the function from the generated code
-            func_code = extract_function(generated_code, entry_point)
-            if func_code is None:
-                # Try to use the entire generated code if it starts with 'def'
-                if generated_code.strip().startswith('def'):
-                    func_code = generated_code
-                else:
-                    logging.info(f"Could not find function {entry_point} in generated code")
-                    total += 1
-                    continue
-
-            # Create namespace with all necessary imports and functions
-            namespace = {
-                'List': list,
+            # Create test environment
+            test_env = {
+                '__builtins__': __builtins__,
+                'List': List,
+                'Tuple': Tuple,
+                'Any': Any,
                 'Optional': Optional,
                 'Union': Union,
                 'Dict': Dict,
-                'Tuple': Tuple,
-                'Any': Any,
-                '__builtins__': __builtins__,
-                'mean': lambda x: sum(x) / len(x),  # Add mean function
-                'math': math,
-                'statistics': statistics,
-                'numpy': np,
+                'candidate': None  # Add candidate for compatibility with test cases
             }
-            
-            # Add all necessary imports
-            exec('''
-from typing import List, Optional, Union, Dict, Tuple, Any
-import math
-import statistics
-import numpy as np
-''', namespace)
-            
-            # Execute the function definition
-            exec(func_code, namespace)
 
-            # Get the function object
-            func_obj = namespace[entry_point]
-
-            # Prepare test environment with same imports
-            test_env = namespace.copy()
-            test_env.update({
-                entry_point: func_obj,
-                "assert": assert_wrapper,
-            })
-
-            # Execute test cases with proper indentation
-            test_cases = []
-            for line in test_code.split("\n"):
-                if line.strip().startswith("assert"):
-                    # Remove any indentation from assert statements
-                    test_cases.append(line.strip())
-                else:
-                    test_cases.append(line)
+            # Execute function definition
+            exec(generated_code, test_env)
             
-            test_code = "\n".join(test_cases)
+            # Set the candidate for test cases
+            test_env['candidate'] = test_env[entry_point]
+
+            # Execute test cases
             test_results = []
-
-            for test_case in test_cases:
-                if test_case.strip().startswith("assert"):
+            for test_case in test_code.split('\n'):
+                if test_case.strip().startswith('assert'):
                     try:
-                        result = execute_test_case(func_obj, test_case.strip(), test_env)
-                        test_results.append(result)
-                    except timeout_decorator.TimeoutError:
+                        exec(test_case, test_env)
+                        test_results.append(True)
+                    except Exception as e:
+                        logging.error(f"Test failed: {e}")
                         test_results.append(False)
-                        logging.warning("Test case timed out")
 
-            # Consider the solution correct if all test cases pass
             if test_results and all(test_results):
                 correct += 1
-                logging.info("✓ All test cases passed")
+                logging.info("✓ All tests passed")
             else:
-                logging.info("✗ Some test cases failed")
-                # Log which test cases failed
-                for i, (test_case, result) in enumerate(zip(test_cases, test_results)):
-                    if test_case.strip().startswith("assert"):
-                        status = "✓" if result else "✗"
-                        logging.info(f"{status} Test {i+1}: {test_case.strip()}")
+                logging.info("✗ Some tests failed")
 
             total += 1
 
-            logging.info(f"\nQuestion: {question[:100]}...")
-            logging.info(f"Generated Code:\n{func_code}")
-            logging.info(f"Test Results: {test_results}")
-
         except Exception as e:
-            logging.error(f"Error processing response: {e}")
+            logging.error(f"Error: {e}")
             total += 1
 
     accuracy = (correct / total) * 100 if total > 0 else 0
