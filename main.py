@@ -149,10 +149,10 @@ def evaluate_model(model, tokenizer, dataset, num_samples=5):
 
             logging.info(f"\nGenerated code:\n{generated_code}\n")
 
-            # After generating code
-            if not generated_code.strip().endswith(":"):
-                logging.error("Incomplete function definition")
-                continue
+            # # After generating code
+            # if not generated_code.strip().endswith(":"):
+            #     logging.error("Incomplete function definition")
+            #     continue
 
             if "return" not in generated_code:
                 logging.error("Missing return statement")
