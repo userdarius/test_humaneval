@@ -91,7 +91,10 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
     results = []
     device = next(model.parameters()).device
 
-    for item in tqdm(dataset[:num_problems]):
+    sampled_problems = np.random.choice(len(dataset), size=num_problems, replace=False)
+
+    for idx in tqdm(sampled_problems):
+        item = dataset[idx]
         question = item["question"]
         entry_point = item["entry_point"]
         test_code = item["test_code"]
@@ -257,7 +260,9 @@ def main():
 
     # Evaluate
     logging.info("Starting evaluation...")
-    accuracy = evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
+    accuracy = evaluate_model(
+        model, tokenizer, dataset, num_problems=5, n_samples=10, k=1
+    )
 
     logging.info(f"\nFinal Accuracy: {accuracy:.2f}%")
 
