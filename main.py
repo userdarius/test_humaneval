@@ -127,6 +127,8 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
 
                 response = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
+                logging.info(f"\nGenerated code:\n{response}\n")
+
                 if "def " + entry_point in response:
                     generated_code = response[response.find("def " + entry_point) :]
                     for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
@@ -163,7 +165,7 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
 
                 fixed_code = "\n".join(fixed_lines)
 
-                logging.info(f"\nGenerated code:\n{fixed_code}\n")
+                logging.info(f"\nFixed code:\n{fixed_code}\n")
 
                 test_env = {
                     "__builtins__": __builtins__,
