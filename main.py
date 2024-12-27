@@ -88,21 +88,21 @@ def evaluate_model(model, tokenizer, dataset, num_samples=5):
         entry_point = item["entry_point"]
         test_code = item["test_code"]
 
-        # Improved prompt with explicit structure and example
-        prompt = f"""Write a complete Python function implementation. Follow this exact structure:
+        #         # Improved prompt with explicit structure and example
+        #         prompt = f"""Write a complete Python function implementation. Follow this exact structure:
 
-1. Function signature (with type hints, no docstring)
-2. Function body with implementation
-3. Return statement
+        # 1. Function signature (with type hints, no docstring)
+        # 2. Function body with implementation
+        # 3. Return statement
 
-Here is the function to implement:
-{question}
+        # Here is the function to implement:
+        # {question}
 
-Begin your implementation with:
-def {entry_point}"""
+        # Begin your implementation with:
+        # def {entry_point}"""
 
         try:
-            encoded_input = tokenizer(prompt, return_tensors="pt", truncation=True)
+            encoded_input = tokenizer(question, return_tensors="pt", truncation=True)
             input_ids = encoded_input["input_ids"].to(device)
             attention_mask = encoded_input.get("attention_mask", None)
             if attention_mask is not None:
@@ -119,23 +119,23 @@ def {entry_point}"""
                     num_beams=5,
                     pad_token_id=tokenizer.eos_token_id,
                     repetition_penalty=1.2,  # Add repetition penalty
-                    length_penalty=1.0,      # Add length penalty
-                    min_length=50,           # Ensure minimum length
+                    length_penalty=1.0,  # Add length penalty
+                    min_length=50,  # Ensure minimum length
                     no_repeat_ngram_size=2,  # Prevent repetition of n-grams
-                    early_stopping=False,     # Don't stop early
+                    early_stopping=False,  # Don't stop early
                 )
 
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
             # Extract just the function implementation
             if "def " + entry_point in response:
-                generated_code = response[response.find("def " + entry_point):]
+                generated_code = response[response.find("def " + entry_point) :]
                 # Remove anything after a double newline or common endings
                 for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
                     if ending in generated_code:
                         generated_code = generated_code.split(ending)[0]
             else:
-                generated_code = response[len(prompt):].strip()
+                generated_code = response[len(question) :].strip()
 
             # Ensure the function has a body by checking for colon and indentation
             if not generated_code.strip().endswith(":"):
