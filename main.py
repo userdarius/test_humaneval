@@ -132,43 +132,44 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
 
                 logging.info(f"\nGenerated code:\n{response}\n")
 
-                if "def " + entry_point in response:
-                    generated_code = response[response.find("def " + entry_point) :]
-                    for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
-                        if ending in generated_code:
-                            generated_code = generated_code.split(ending)[0]
-                else:
-                    generated_code = response[len(question) :].strip()
+                # # Extract the function definition from the response
+                # if "def " + entry_point in response:
+                #     generated_code = response[response.find("def " + entry_point) :]
+                #     for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
+                #         if ending in generated_code:
+                #             generated_code = generated_code.split(ending)[0]
+                # else:
+                #     generated_code = response[len(question) :].strip()
 
-                if not generated_code.strip().endswith(":"):
-                    if not ":" in generated_code:
-                        generated_code += ":"
+                # if not generated_code.strip().endswith(":"):
+                #     if not ":" in generated_code:
+                #         generated_code += ":"
 
-                if not "\n" in generated_code:
-                    generated_code += "\n    pass"
+                # if not "\n" in generated_code:
+                #     generated_code += "\n    pass"
 
-                lines = generated_code.split("\n")
-                fixed_lines = []
-                base_indent = None
-                for line in lines:
-                    if line.strip():
-                        if base_indent is None and line.startswith("def"):
-                            base_indent = len(line) - len(line.lstrip())
-                        if base_indent is not None:
-                            stripped = (
-                                line[base_indent:]
-                                if line.startswith(" " * base_indent)
-                                else line
-                            )
-                            fixed_lines.append(
-                                "    " + stripped
-                                if stripped.strip() and not stripped.startswith("def")
-                                else stripped
-                            )
+                # lines = generated_code.split("\n")
+                # fixed_lines = []
+                # base_indent = None
+                # for line in lines:
+                #     if line.strip():
+                #         if base_indent is None and line.startswith("def"):
+                #             base_indent = len(line) - len(line.lstrip())
+                #         if base_indent is not None:
+                #             stripped = (
+                #                 line[base_indent:]
+                #                 if line.startswith(" " * base_indent)
+                #                 else line
+                #             )
+                #             fixed_lines.append(
+                #                 "    " + stripped
+                #                 if stripped.strip() and not stripped.startswith("def")
+                #                 else stripped
+                #             )
+                
+                # fixed_code = "\n".join(fixed_lines)
 
-                fixed_code = "\n".join(fixed_lines)
-
-                logging.info(f"\nFixed code:\n{fixed_code}\n")
+                # logging.info(f"\nFixed code:\n{fixed_code}\n")
 
                 test_env = {
                     "__builtins__": __builtins__,
@@ -182,7 +183,7 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
                     "candidate": None,
                 }
 
-                exec(fixed_code, test_env)
+                exec(response, test_env)
                 test_env["candidate"] = test_env[entry_point]
 
                 test_results = []
