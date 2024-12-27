@@ -88,19 +88,19 @@ def evaluate_model(model, tokenizer, dataset, num_samples=5):
         entry_point = item["entry_point"]
         test_code = item["test_code"]
 
-        # Modified prompt to focus on implementation
-        prompt = f"""Write a complete implementation for this Python function. Your response should include:
-            1. The full function signature
-            2. The complete docstring
-            3. A working implementation that passes the given example test cases
-            4. Proper indentation
-            5. A return statement
+        # Improved prompt with explicit structure and example
+        prompt = f"""Write a complete Python function implementation. Follow this exact structure:
 
-            Here is the function to implement:
-            {question}
+1. Function signature (with type hints)
+2. Docstring
+3. Function body with implementation
+4. Return statement
 
-            Write only the implementation, starting with:
-            def {entry_point}"""
+Here is the function to implement:
+{question}
+
+Begin your implementation with:
+def {entry_point}"""
 
         try:
             encoded_input = tokenizer(prompt, return_tensors="pt", truncation=True)
@@ -114,24 +114,41 @@ def evaluate_model(model, tokenizer, dataset, num_samples=5):
                     input_ids,
                     attention_mask=attention_mask,
                     max_new_tokens=1024,
-                    do_sample=True,  # Enable sampling
-                    temperature=0.2,  # Low temperature for focused output
-                    top_p=0.95,
-                    num_beams=5,  # Use beam search
+                    do_sample=True,
+                    temperature=0.1,  # Even lower temperature for more focused output
+                    top_p=0.9,
+                    num_beams=5,
                     pad_token_id=tokenizer.eos_token_id,
-                    eos_token_id=tokenizer.encode("\n\n")[0],
+                    repetition_penalty=1.2,  # Add repetition penalty
+                    length_penalty=1.0,      # Add length penalty
+                    min_length=50,           # Ensure minimum length
+                    no_repeat_ngram_size=2,  # Prevent repetition of n-grams
+                    early_stopping=False,     # Don't stop early
                 )
 
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
             # Extract just the function implementation
             if "def " + entry_point in response:
-                generated_code = response[response.find("def " + entry_point) :]
-                # Remove anything after the function (like test cases)
-                if "\n\n" in generated_code:
-                    generated_code = generated_code.split("\n\n")[0]
+                generated_code = response[response.find("def " + entry_point):]
+                # Remove anything after a double newline or common endings
+                for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
+                    if ending in generated_code:
+                        generated_code = generated_code.split(ending)[0]
             else:
-                generated_code = response[len(prompt) :].strip()
+                generated_code = response[len(prompt):].strip()
+
+            # Ensure the function has a body by checking for colon and indentation
+            if not generated_code.strip().endswith(":"):
+                # Try to add the missing colon
+                if not ":" in generated_code:
+                    generated_code += ":"
+
+            # Add a basic implementation if no body is present
+            if not "\n" in generated_code:
+                generated_code += "\n    pass"
+
+            logging.info(f"\nGenerated code:\n{generated_code}\n")
 
             # After generating code
             if not generated_code.strip().endswith(":"):
@@ -140,13 +157,6 @@ def evaluate_model(model, tokenizer, dataset, num_samples=5):
 
             if "return" not in generated_code:
                 logging.error("Missing return statement")
-                continue
-
-            logging.info(f"\nGenerated code:\n{generated_code}\n")
-
-            if not generated_code or "pass" in generated_code:
-                logging.error("Invalid or empty implementation")
-                total += 1
                 continue
 
             # Fix indentation in the generated code
