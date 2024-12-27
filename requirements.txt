@@ -6,3 +6,4 @@ evaluate
 bitsandbytes
 accelerate
 tiktoken
+timeout_decorator

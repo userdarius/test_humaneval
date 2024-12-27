@@ -167,7 +167,7 @@ def assert_wrapper(condition, *args, **kwargs):
 
 def main():
     # Model parameters
-    model_name = "meta-llama/Llama-2-3b"  # You'll need HF access token
+    model_name = "meta-llama/Llama-3.2-3b"  # You'll need HF access token
 
     # Load dataset
     dataset = get_dataset("openai_humaneval", seed=42)
@@ -191,7 +191,7 @@ def main():
         "model_name": model_name,
         "accuracy": accuracy,
         "timestamp": datetime.now().isoformat(),
-        "num_samples": num_samples
+        "num_samples": len(dataset)
     }
     
     results_file = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
