@@ -23,18 +23,18 @@ def extract_function(code_string, function_name):
     try:
         # Clean up the code string
         code_string = code_string.strip()
-        
+
         # If the code starts with the function definition, return it directly
-        if code_string.startswith(f'def {function_name}'):
+        if code_string.startswith(f"def {function_name}"):
             return code_string
-        
+
         # Try parsing as AST
         try:
             tree = ast.parse(code_string)
         except SyntaxError:
             # Try adding a newline at the start in case indentation is wrong
             try:
-                tree = ast.parse('\n' + code_string)
+                tree = ast.parse("\n" + code_string)
             except SyntaxError:
                 return None
 
@@ -51,7 +51,7 @@ def extract_function(code_string, function_name):
                 return function_code
 
         return None
-        
+
     except Exception as e:
         logging.error(f"Error extracting function: {e}")
         return None
@@ -61,23 +61,25 @@ def extract_function(code_string, function_name):
 def execute_test_case(func_obj, test_case, test_env):
     """Execute a single test case and return True if it passes."""
     try:
-        # Create a string buffer to capture stdout
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
-            # Execute in the provided test environment
             exec(test_case, test_env)
         return True
-    except AssertionError:
+    except AssertionError as e:
+        logging.error(f"Test assertion failed: {str(e)}")
+        return False
+    except TypeError as e:
+        logging.error(f"Type error in implementation: {str(e)}")
         return False
     except Exception as e:
-        logging.error(f"Error executing test case: {e}")
+        logging.error(f"Error executing test case: {type(e).__name__}: {str(e)}")
         return False
 
 
 def evaluate_model(model, tokenizer, dataset, num_samples=5):
     correct = 0
     total = 0
-    
+
     # Get model's device
     device = next(model.parameters()).device
 
@@ -87,76 +89,100 @@ def evaluate_model(model, tokenizer, dataset, num_samples=5):
         test_code = item["test_code"]
 
         # Modified prompt to focus on implementation
-        prompt = f"""Write a complete implementation for this Python function. Include the full implementation with proper indentation.
+        prompt = f"""Write a complete implementation for this Python function. Your response should include:
+            1. The full function signature
+            2. The complete docstring
+            3. A working implementation that passes the given example test cases
+            4. Proper indentation
+            5. A return statement
 
-{question}
+            Here is the function to implement:
+            {question}
 
-Your implementation:
-def {entry_point}"""
+            Write only the implementation, starting with:
+            def {entry_point}"""
 
         try:
             encoded_input = tokenizer(prompt, return_tensors="pt", truncation=True)
-            input_ids = encoded_input['input_ids'].to(device)
-            attention_mask = encoded_input.get('attention_mask', None)
+            input_ids = encoded_input["input_ids"].to(device)
+            attention_mask = encoded_input.get("attention_mask", None)
             if attention_mask is not None:
                 attention_mask = attention_mask.to(device)
-            
+
             with torch.no_grad():
                 outputs = model.generate(
                     input_ids,
                     attention_mask=attention_mask,
-                    max_new_tokens=512,
-                    do_sample=True,     # Enable sampling
-                    temperature=0.2,    # Low temperature for focused output
+                    max_new_tokens=1024,
+                    do_sample=True,  # Enable sampling
+                    temperature=0.2,  # Low temperature for focused output
                     top_p=0.95,
-                    num_beams=5,        # Use beam search
+                    num_beams=5,  # Use beam search
                     pad_token_id=tokenizer.eos_token_id,
+                    eos_token_id=tokenizer.encode("\n\n")[0],
                 )
 
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            
+
             # Extract just the function implementation
             if "def " + entry_point in response:
-                generated_code = response[response.find("def " + entry_point):]
+                generated_code = response[response.find("def " + entry_point) :]
                 # Remove anything after the function (like test cases)
                 if "\n\n" in generated_code:
                     generated_code = generated_code.split("\n\n")[0]
             else:
-                generated_code = response[len(prompt):].strip()
+                generated_code = response[len(prompt) :].strip()
+
+            # After generating code
+            if not generated_code.strip().endswith(":"):
+                logging.error("Incomplete function definition")
+                continue
+
+            if "return" not in generated_code:
+                logging.error("Missing return statement")
+                continue
 
             logging.info(f"\nGenerated code:\n{generated_code}\n")
-            
+
             if not generated_code or "pass" in generated_code:
                 logging.error("Invalid or empty implementation")
                 total += 1
                 continue
 
             # Fix indentation in the generated code
-            lines = generated_code.split('\n')
+            lines = generated_code.split("\n")
             fixed_lines = []
             base_indent = None
             for line in lines:
                 if line.strip():
-                    if base_indent is None and line.startswith('def'):
+                    if base_indent is None and line.startswith("def"):
                         base_indent = len(line) - len(line.lstrip())
                     if base_indent is not None:
                         # Remove base indentation and add 4 spaces for proper indentation
-                        stripped = line[base_indent:] if line.startswith(' ' * base_indent) else line
-                        fixed_lines.append('    ' + stripped if stripped.strip() and not stripped.startswith('def') else stripped)
-            
-            fixed_code = '\n'.join(fixed_lines)
+                        stripped = (
+                            line[base_indent:]
+                            if line.startswith(" " * base_indent)
+                            else line
+                        )
+                        fixed_lines.append(
+                            "    " + stripped
+                            if stripped.strip() and not stripped.startswith("def")
+                            else stripped
+                        )
+
+            fixed_code = "\n".join(fixed_lines)
             logging.info(f"\nFixed code:\n{fixed_code}\n")
 
             # Create test environment
             test_env = {
-                '__builtins__': __builtins__,
-                'List': List,
-                'Tuple': Tuple,
-                'Any': Any,
-                'Optional': Optional,
-                'Union': Union,
-                'Dict': Dict,
-                'candidate': None  # Add candidate for compatibility with test cases
+                "__builtins__": __builtins__,
+                "List": List,
+                "Tuple": Tuple,
+                "Any": Any,
+                "Optional": Optional,
+                "Union": Union,
+                "Dict": Dict,
+                "candidate": None,  # Add candidate for compatibility with test cases
             }
 
             # Execute function definition
@@ -168,13 +194,13 @@ def {entry_point}"""
                 continue
 
             # Set the candidate for test cases
-            test_env['candidate'] = test_env[entry_point]
+            test_env["candidate"] = test_env[entry_point]
 
             # Execute test cases with fixed indentation
             test_results = []
-            for test_case in test_code.split('\n'):
+            for test_case in test_code.split("\n"):
                 test_case = test_case.strip()  # Remove any indentation
-                if test_case.startswith('assert'):
+                if test_case.startswith("assert"):
                     try:
                         exec(test_case, test_env)
                         test_results.append(True)
@@ -209,7 +235,7 @@ def main():
     model_name = "meta-llama/Llama-3.2-3b"  # need to add HF_TOKEN
 
     # Load dataset
-    dataset = get_dataset("openai_humaneval", seed=42)  
+    dataset = get_dataset("openai_humaneval", seed=42)
 
     # Load model and tokenizer
     logging.info("Loading model and tokenizer...")
@@ -229,13 +255,13 @@ def main():
         "model_name": model_name,
         "accuracy": accuracy,
         "timestamp": datetime.now().isoformat(),
-        "num_samples": len(dataset)
+        "num_samples": len(dataset),
     }
-    
+
     results_file = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(results_file, "w") as f:
         json.dump(results, f, indent=2)
-    
+
     logging.info(f"Results saved to {results_file}")
 
 
