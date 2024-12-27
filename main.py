@@ -79,8 +79,6 @@ def execute_test_case(func_obj, test_case, test_env):
 def evaluate_model(model, tokenizer, dataset, num_samples=5):
     correct = 0
     total = 0
-
-    # Get model's device
     device = next(model.parameters()).device
 
     for item in tqdm(dataset[:num_samples]):
@@ -88,18 +86,18 @@ def evaluate_model(model, tokenizer, dataset, num_samples=5):
         entry_point = item["entry_point"]
         test_code = item["test_code"]
 
-        # Improved prompt with explicit structure and example
-        prompt = f"""Write a complete Python function implementation. Follow this exact structure:
+        prompt = f"""Write a complete Python function implementation including the body and return statement. The function MUST include a complete implementation after the signature.
 
-1. Function signature (with type hints, no docstring)
-2. Function body with implementation
-3. Return statement
-
-Here is the function to implement:
+Function to implement:
 {question}
 
-Begin your implementation with:
-def {entry_point}"""
+Your complete implementation should follow this structure:
+def {entry_point}
+    # Implementation here
+    # Must include actual code, not just signature
+    return result
+
+Begin your implementation:"""
 
         try:
             encoded_input = tokenizer(prompt, return_tensors="pt", truncation=True)
@@ -114,84 +112,66 @@ def {entry_point}"""
                     attention_mask=attention_mask,
                     max_new_tokens=1024,
                     do_sample=True,
-                    temperature=0.1,  # Even lower temperature for more focused output
-                    top_p=0.9,
+                    temperature=0.2,  # Lower temperature for more focused output
+                    top_p=0.95,
                     num_beams=5,
                     pad_token_id=tokenizer.eos_token_id,
-                    repetition_penalty=1.2,  # Add repetition penalty
-                    length_penalty=1.0,      # Add length penalty
-                    min_length=50,           # Ensure minimum length
-                    no_repeat_ngram_size=2,  # Prevent repetition of n-grams
-                    early_stopping=False,     # Don't stop early
+                    repetition_penalty=1.2,
+                    early_stopping=True,
+                    min_length=100,  # Increase minimum length
+                    max_length=2048,  # Increase maximum length
+                    no_repeat_ngram_size=3,
                 )
 
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
-            # Extract just the function implementation
+            # Extract the function implementation
             if "def " + entry_point in response:
-                generated_code = response[response.find("def " + entry_point):]
-                # Remove anything after a double newline or common endings
+                generated_code = response[response.find("def " + entry_point) :]
+                # Clean up the generated code
                 for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
                     if ending in generated_code:
-                        generated_code = generated_code.split(ending)[0]
+                        generated_code = generated_code.split(ending)[0].strip()
             else:
-                generated_code = response[len(prompt):].strip()
-
-            # Ensure the function has a body by checking for colon and indentation
-            if not generated_code.strip().endswith(":"):
-                # Try to add the missing colon
-                if not ":" in generated_code:
-                    generated_code += ":"
-
-            # Add a basic implementation if no body is present
-            if not "\n" in generated_code:
-                generated_code += "\n    pass"
-
-            logging.info(f"\nGenerated code:\n{generated_code}\n")
-
-            # After generating code
-            if not generated_code.strip().endswith(":"):
-                logging.error("Incomplete function definition")
                 continue
 
-            if "return" not in generated_code:
-                logging.error("Missing return statement")
+            # Verify the function has a complete implementation
+            if not generated_code.strip().endswith(":"):
+                generated_code += ":"
+
+            # Ensure there's a function body
+            if not "\n" in generated_code or "return" not in generated_code.lower():
+                logging.error(
+                    "Incomplete implementation - missing body or return statement"
+                )
                 continue
 
-            # Fix indentation in the generated code
+            # Fix indentation
             lines = generated_code.split("\n")
             fixed_lines = []
-            base_indent = None
+            first_line = True
             for line in lines:
-                if line.strip():
-                    if base_indent is None and line.startswith("def"):
-                        base_indent = len(line) - len(line.lstrip())
-                    if base_indent is not None:
-                        # Remove base indentation and add 4 spaces for proper indentation
-                        stripped = (
-                            line[base_indent:]
-                            if line.startswith(" " * base_indent)
-                            else line
-                        )
-                        fixed_lines.append(
-                            "    " + stripped
-                            if stripped.strip() and not stripped.startswith("def")
-                            else stripped
-                        )
+                if first_line:
+                    fixed_lines.append(line)
+                    first_line = False
+                else:
+                    # Ensure proper indentation for function body
+                    if line.strip():
+                        fixed_lines.append("    " + line.lstrip())
 
             fixed_code = "\n".join(fixed_lines)
-            logging.info(f"\nFixed code:\n{fixed_code}\n")
+            logging.info(f"\nProcessed code:\n{fixed_code}\n")
 
             # Create test environment
             test_env = {
                 "__builtins__": __builtins__,
                 "List": List,
-                "Tuple": Tuple,
-                "Any": Any,
                 "Optional": Optional,
                 "Union": Union,
                 "Dict": Dict,
-                "candidate": None,  # Add candidate for compatibility with test cases
+                "Tuple": Tuple,
+                "Any": Any,
+                "candidate": None,
             }
 
             # Execute function definition
@@ -199,25 +179,24 @@ def {entry_point}"""
                 exec(fixed_code, test_env)
             except Exception as e:
                 logging.error(f"Error in function definition: {e}")
-                total += 1
                 continue
 
-            # Set the candidate for test cases
+            # Set up for testing
             test_env["candidate"] = test_env[entry_point]
 
-            # Execute test cases with fixed indentation
-            test_results = []
+            # Run tests
+            all_tests_passed = True
             for test_case in test_code.split("\n"):
-                test_case = test_case.strip()  # Remove any indentation
+                test_case = test_case.strip()
                 if test_case.startswith("assert"):
                     try:
                         exec(test_case, test_env)
-                        test_results.append(True)
                     except Exception as e:
                         logging.error(f"Test failed: {e}")
-                        test_results.append(False)
+                        all_tests_passed = False
+                        break
 
-            if test_results and all(test_results):
+            if all_tests_passed:
                 correct += 1
                 logging.info("✓ All tests passed")
             else:
@@ -228,6 +207,7 @@ def {entry_point}"""
         except Exception as e:
             logging.error(f"Error: {e}")
             total += 1
+            continue
 
     accuracy = (correct / total) * 100 if total > 0 else 0
     return accuracy
