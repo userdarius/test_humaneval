@@ -76,16 +76,19 @@ Answer:"""
 
         # Generate response
         try:
-            inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
-            # Move inputs to the same device as model
-            inputs = {k: v.to(device) for k, v in inputs.items()}
+            # Tokenize input and get the correct attributes
+            encoded_input = tokenizer(prompt, return_tensors="pt", truncation=True)
+            input_ids = encoded_input['input_ids'].to(device)
+            attention_mask = encoded_input.get('attention_mask', None)
+            if attention_mask is not None:
+                attention_mask = attention_mask.to(device)
             
             with torch.no_grad():
                 outputs = model.generate(
-                    inputs.input_ids,
-                    attention_mask=inputs.get('attention_mask'),  # Add attention mask
+                    input_ids,
+                    attention_mask=attention_mask,
                     max_new_tokens=512,
-                    do_sample=True,  # Enable sampling
+                    do_sample=True,
                     temperature=0.1,
                     top_p=0.9,
                     pad_token_id=tokenizer.eos_token_id,
