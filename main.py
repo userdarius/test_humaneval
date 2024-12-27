@@ -191,6 +191,7 @@ def evaluate_model(model, tokenizer, dataset, num_samples=5):
                 "Optional": Optional,
                 "Union": Union,
                 "Dict": Dict,
+                "mean": statistics.mean,
                 "candidate": None,  # Add candidate for compatibility with test cases
             }
 
