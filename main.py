@@ -240,9 +240,162 @@ def assert_wrapper(condition, *args, **kwargs):
         raise AssertionError
 
 
+def evaluate_model_pass_at_k(
+    model, tokenizer, dataset, k=10, temperature=0.8, num_problems=None
+):
+    """
+    Evaluate model using pass@k metric.
+    Args:
+        model: The model to evaluate
+        tokenizer: The tokenizer
+        dataset: The evaluation dataset
+        k: Number of samples to generate per problem
+        temperature: Temperature for sampling
+        num_problems: Optional number of problems to evaluate (for testing)
+    Returns:
+        dict: Dictionary containing pass@k metrics
+    """
+    device = next(model.parameters()).device
+    results = []
+
+    # Limit number of problems if specified
+    problems = dataset[:num_problems] if num_problems else dataset
+
+    for item in tqdm(problems):
+        question = item["question"]
+        entry_point = item["entry_point"]
+        test_code = item["test_code"]
+
+        # Generate k samples for this problem
+        samples_passed = []
+
+        for _ in range(k):
+            try:
+                encoded_input = tokenizer(
+                    question, return_tensors="pt", truncation=True
+                )
+                input_ids = encoded_input["input_ids"].to(device)
+                attention_mask = encoded_input.get("attention_mask", None)
+                if attention_mask is not None:
+                    attention_mask = attention_mask.to(device)
+
+                with torch.no_grad():
+                    outputs = model.generate(
+                        input_ids,
+                        attention_mask=attention_mask,
+                        max_new_tokens=1024,
+                        do_sample=True,
+                        temperature=temperature,
+                        top_p=0.95,
+                        num_beams=1,  # Set to 1 for pure sampling
+                        pad_token_id=tokenizer.eos_token_id,
+                        repetition_penalty=1.2,
+                        no_repeat_ngram_size=2,
+                    )
+
+                response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+                # Extract and fix the generated code (same as before)
+                if "def " + entry_point in response:
+                    generated_code = response[response.find("def " + entry_point) :]
+                    for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
+                        if ending in generated_code:
+                            generated_code = generated_code.split(ending)[0]
+                else:
+                    generated_code = response[len(question) :].strip()
+
+                # Fix indentation
+                lines = generated_code.split("\n")
+                fixed_lines = []
+                base_indent = None
+                for line in lines:
+                    if line.strip():
+                        if base_indent is None and line.startswith("def"):
+                            base_indent = len(line) - len(line.lstrip())
+                        if base_indent is not None:
+                            stripped = (
+                                line[base_indent:]
+                                if line.startswith(" " * base_indent)
+                                else line
+                            )
+                            fixed_lines.append(
+                                "    " + stripped
+                                if stripped.strip() and not stripped.startswith("def")
+                                else stripped
+                            )
+
+                fixed_code = "\n".join(fixed_lines)
+
+                # Create test environment
+                test_env = {
+                    "__builtins__": __builtins__,
+                    "List": List,
+                    "Tuple": Tuple,
+                    "Any": Any,
+                    "Optional": Optional,
+                    "Union": Union,
+                    "Dict": Dict,
+                    "mean": statistics.mean,
+                    "candidate": None,
+                }
+
+                # Execute function definition
+                exec(fixed_code, test_env)
+                test_env["candidate"] = test_env[entry_point]
+
+                # Run all test cases
+                all_tests_passed = True
+                for test_case in test_code.split("\n"):
+                    test_case = test_case.strip()
+                    if test_case.startswith("assert"):
+                        try:
+                            exec(test_case, test_env)
+                        except Exception as e:
+                            all_tests_passed = False
+                            break
+
+                samples_passed.append(all_tests_passed)
+
+            except Exception as e:
+                logging.error(f"Error generating/testing sample: {e}")
+                samples_passed.append(False)
+
+        # Store results for this problem
+        results.append(samples_passed)
+
+    # Calculate pass@k metrics for different k values
+    metrics = {}
+    for k_value in [1, 5, 10]:  # Calculate pass@1, pass@5, pass@10
+        if k_value <= k:  # Only calculate if we have enough samples
+            pass_at_k = calculate_pass_at_k(results, k_value)
+            metrics[f"pass@{k_value}"] = pass_at_k
+
+    return metrics
+
+
+def calculate_pass_at_k(results, k):
+    """
+    Calculate pass@k metric from results.
+    Args:
+        results: List of lists of booleans indicating whether each sample passed
+        k: The k value to calculate pass@k for
+    Returns:
+        float: The pass@k score
+    """
+    total_problems = len(results)
+    problems_passed = 0
+
+    for problem_results in results:
+        # Check if at least one sample in the first k samples passed
+        if any(problem_results[:k]):
+            problems_passed += 1
+
+    return problems_passed / total_problems if total_problems > 0 else 0.0
+
+
 def main():
     # Model parameters
-    model_name = "meta-llama/Llama-3.2-3b"  # need to add HF_TOKEN
+    model_name = "meta-llama/Llama-3.2-3b"
 
     # Load dataset
     dataset = get_dataset("openai_humaneval", seed=42)
@@ -251,27 +404,25 @@ def main():
     logging.info("Loading model and tokenizer...")
     model, tokenizer = load_model_and_tokenizer(model_name)
 
-    # No need to manually move model to device since we're using device_map="auto"
-    # The model will be automatically placed on available GPUs
-
-    # Evaluate
+    # Evaluate with pass@k
     logging.info("Starting evaluation...")
-    accuracy = evaluate_model(model, tokenizer, dataset)
-
-    logging.info(f"\nFinal Accuracy: {accuracy:.2f}%")
+    metrics = evaluate_model_pass_at_k(model, tokenizer, dataset, k=10)
 
     # Save results
     results = {
         "model_name": model_name,
-        "accuracy": accuracy,
+        "metrics": metrics,
         "timestamp": datetime.now().isoformat(),
-        "num_samples": len(dataset),
+        "num_problems": len(dataset),
     }
 
-    results_file = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    results_file = f"results_pass_at_k_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
     with open(results_file, "w") as f:
         json.dump(results, f, indent=2)
 
+    # Log results
+    for k, score in metrics.items():
+        logging.info(f"{k}: {score:.2f}")
     logging.info(f"Results saved to {results_file}")
 
 
