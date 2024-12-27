@@ -58,6 +58,9 @@ def execute_test_case(func_obj, test_case, test_env):
 def evaluate_model(model, tokenizer, dataset, num_samples=10):
     correct = 0
     total = 0
+    
+    # Get model's device
+    device = next(model.parameters()).device
 
     for item in tqdm(dataset[:num_samples]):
         question = item["question"]
@@ -74,12 +77,17 @@ Answer:"""
         # Generate response
         try:
             inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
+            # Move inputs to the same device as model
+            inputs = {k: v.to(device) for k, v in inputs.items()}
+            
             with torch.no_grad():
                 outputs = model.generate(
                     inputs.input_ids,
+                    attention_mask=inputs.get('attention_mask'),  # Add attention mask
                     max_new_tokens=512,
+                    do_sample=True,  # Enable sampling
                     temperature=0.1,
-                    do_sample=False,
+                    top_p=0.9,
                     pad_token_id=tokenizer.eos_token_id,
                 )
             
@@ -167,18 +175,17 @@ def assert_wrapper(condition, *args, **kwargs):
 
 def main():
     # Model parameters
-    model_name = "meta-llama/Llama-3.2-3b"  # You'll need HF access token
+    model_name = "meta-llama/Llama-3.2-3b"  # need to add HF_TOKEN 
 
     # Load dataset
-    dataset = get_dataset("openai_humaneval", seed=42)
+    dataset = get_dataset("openai_humaneval", seed=42)  
 
     # Load model and tokenizer
     logging.info("Loading model and tokenizer...")
     model, tokenizer = load_model_and_tokenizer(model_name)
 
-    # Move model to GPU if available
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
+    # No need to manually move model to device since we're using device_map="auto"
+    # The model will be automatically placed on available GPUs
 
     # Evaluate
     logging.info("Starting evaluation...")
