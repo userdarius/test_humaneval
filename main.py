@@ -107,7 +107,7 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
                         attention_mask=attention_mask,
                         max_new_tokens=1024,
                         do_sample=True,
-                        temperature=0.5,
+                        temperature=0.8,
                         top_p=0.95,
                         num_beams=5,
                         pad_token_id=tokenizer.eos_token_id,
