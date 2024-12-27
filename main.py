@@ -10,6 +10,10 @@ import io
 import timeout_decorator
 import json
 from datetime import datetime
+from typing import List, Optional, Union, Dict, Tuple, Any
+import math
+import statistics
+import numpy as np
 
 logging.basicConfig(level=logging.INFO)
 
@@ -92,7 +96,6 @@ Write your solution here, starting with 'def {entry_point}':
 
         # Generate response
         try:
-            # Tokenize input and get the correct attributes
             encoded_input = tokenizer(prompt, return_tensors="pt", truncation=True)
             input_ids = encoded_input['input_ids'].to(device)
             attention_mask = encoded_input.get('attention_mask', None)
@@ -105,11 +108,14 @@ Write your solution here, starting with 'def {entry_point}':
                     attention_mask=attention_mask,
                     max_new_tokens=512,
                     do_sample=True,
-                    temperature=0.1,
-                    top_p=0.9,
+                    temperature=0.7,  # Increased temperature for more diverse outputs
+                    top_p=0.95,      # Adjusted top_p
+                    num_return_sequences=1,
                     pad_token_id=tokenizer.eos_token_id,
+                    repetition_penalty=1.2,  # Add repetition penalty
+                    length_penalty=1.0,      # Add length penalty
                 )
-            
+
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
             generated_code = response[len(prompt):].strip()
             
@@ -144,14 +150,28 @@ Write your solution here, starting with 'def {entry_point}':
                     total += 1
                     continue
 
-            # Create a new namespace for the function with required imports
+            # Create namespace with all necessary imports and functions
             namespace = {
-                'List': list,  # Basic replacement for typing.List
+                'List': list,
+                'Optional': Optional,
+                'Union': Union,
+                'Dict': Dict,
+                'Tuple': Tuple,
+                'Any': Any,
                 '__builtins__': __builtins__,
+                'mean': lambda x: sum(x) / len(x),  # Add mean function
+                'math': math,
+                'statistics': statistics,
+                'numpy': np,
             }
             
-            # Add typing imports
-            exec('from typing import List, Optional, Union, Dict, Tuple, Any', namespace)
+            # Add all necessary imports
+            exec('''
+from typing import List, Optional, Union, Dict, Tuple, Any
+import math
+import statistics
+import numpy as np
+''', namespace)
             
             # Execute the function definition
             exec(func_code, namespace)
@@ -159,25 +179,29 @@ Write your solution here, starting with 'def {entry_point}':
             # Get the function object
             func_obj = namespace[entry_point]
 
-            # Prepare the test environment with all necessary imports
-            test_env = {
+            # Prepare test environment with same imports
+            test_env = namespace.copy()
+            test_env.update({
                 entry_point: func_obj,
                 "assert": assert_wrapper,
-                "__builtins__": __builtins__,
-                'List': list,
-            }
-            
-            # Add typing imports to test environment as well
-            exec('from typing import List, Optional, Union, Dict, Tuple, Any', test_env)
+            })
 
-            # Execute test cases
-            test_cases = test_code.split("\n")
+            # Execute test cases with proper indentation
+            test_cases = []
+            for line in test_code.split("\n"):
+                if line.strip().startswith("assert"):
+                    # Remove any indentation from assert statements
+                    test_cases.append(line.strip())
+                else:
+                    test_cases.append(line)
+            
+            test_code = "\n".join(test_cases)
             test_results = []
 
             for test_case in test_cases:
                 if test_case.strip().startswith("assert"):
                     try:
-                        result = execute_test_case(func_obj, test_case, test_env)
+                        result = execute_test_case(func_obj, test_case.strip(), test_env)
                         test_results.append(result)
                     except timeout_decorator.TimeoutError:
                         test_results.append(False)
