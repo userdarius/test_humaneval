@@ -224,9 +224,15 @@ def try_run_tests(code, entry_point, test_code, test_env):
         for test_case in test_code.split("\n"):
             test_case = test_case.strip()
             if test_case.startswith("assert"):
-                exec(test_case, test_env)
+                try:
+                    exec(test_case, test_env)
+                except Exception as e:
+                    logging.error(f"Test failed: {test_case}")
+                    logging.error(f"Error: {str(e)}")
+                    return False
         return True
-    except Exception:
+    except Exception as e:
+        logging.error(f"Setup failed: {str(e)}")
         return False
 
 
