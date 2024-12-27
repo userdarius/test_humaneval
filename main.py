@@ -117,7 +117,7 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
                         attention_mask=attention_mask,
                         max_new_tokens=1024,
                         do_sample=True,
-                        temperature=0.3,  # Higher temperature for more diversity
+                        temperature=0.5,  # Higher temperature for more diversity
                         top_p=0.95,
                         num_beams=5,
                         pad_token_id=tokenizer.eos_token_id,
@@ -141,35 +141,35 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
                 else:
                     generated_code = response[len(question) :].strip()
 
-                # if not generated_code.strip().endswith(":"):
-                #     if not ":" in generated_code:
-                #         generated_code += ":"
+                if not generated_code.strip().endswith(":"):
+                    if not ":" in generated_code:
+                        generated_code += ":"
 
-                # if not "\n" in generated_code:
-                #     generated_code += "\n    pass"
+                if not "\n" in generated_code:
+                    generated_code += "\n    pass"
 
-                # lines = generated_code.split("\n")
-                # fixed_lines = []
-                # base_indent = None
-                # for line in lines:
-                #     if line.strip():
-                #         if base_indent is None and line.startswith("def"):
-                #             base_indent = len(line) - len(line.lstrip())
-                #         if base_indent is not None:
-                #             stripped = (
-                #                 line[base_indent:]
-                #                 if line.startswith(" " * base_indent)
-                #                 else line
-                #             )
-                #             fixed_lines.append(
-                #                 "    " + stripped
-                #                 if stripped.strip() and not stripped.startswith("def")
-                #                 else stripped
-                #             )
+                lines = generated_code.split("\n")
+                fixed_lines = []
+                base_indent = None
+                for line in lines:
+                    if line.strip():
+                        if base_indent is None and line.startswith("def"):
+                            base_indent = len(line) - len(line.lstrip())
+                        if base_indent is not None:
+                            stripped = (
+                                line[base_indent:]
+                                if line.startswith(" " * base_indent)
+                                else line
+                            )
+                            fixed_lines.append(
+                                "    " + stripped
+                                if stripped.strip() and not stripped.startswith("def")
+                                else stripped
+                            )
                 
-                # fixed_code = "\n".join(fixed_lines)
+                fixed_code = "\n".join(fixed_lines)
 
-                # logging.info(f"\nFixed code:\n{fixed_code}\n")
+                logging.info(f"\nFixed code:\n{fixed_code}\n")
 
                 test_env = {
                     "__builtins__": __builtins__,
