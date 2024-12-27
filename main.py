@@ -86,13 +86,21 @@ def evaluate_model(model, tokenizer, dataset, num_samples=10):
         entry_point = item["entry_point"]
         test_code = item["test_code"]
 
-        # Prepare prompt with more explicit formatting instructions
-        prompt = f"""Write a Python function that solves this problem. Only provide the function implementation without any explanations or additional code.
+        # Improved prompt with clear instructions and example format
+        prompt = f"""Write a complete Python function to solve this programming problem. Include the full implementation.
 
+Problem:
 {question}
 
-Write your solution here, starting with 'def {entry_point}':
-"""
+Write your solution below, starting with the function definition 'def {entry_point}'. Do not include any comments or test cases.
+
+Example format:
+def example_function(arg1: type1, arg2: type2) -> return_type:
+    # Implementation
+    return result
+
+Your solution:
+def {entry_point}"""
 
         # Generate response
         try:
@@ -108,37 +116,39 @@ Write your solution here, starting with 'def {entry_point}':
                     attention_mask=attention_mask,
                     max_new_tokens=512,
                     do_sample=True,
-                    temperature=0.7,  # Increased temperature for more diverse outputs
-                    top_p=0.95,      # Adjusted top_p
+                    temperature=0.2,  # Lower temperature for more focused outputs
+                    top_p=0.95,
+                    top_k=50,        # Add top_k sampling
                     num_return_sequences=1,
                     pad_token_id=tokenizer.eos_token_id,
-                    repetition_penalty=1.2,  # Add repetition penalty
-                    length_penalty=1.0,      # Add length penalty
+                    repetition_penalty=1.2,
+                    length_penalty=1.0,
+                    min_new_tokens=10,  # Ensure some minimum output
+                    eos_token_id=tokenizer.eos_token_id,
+                    early_stopping=True
                 )
 
             response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-            generated_code = response[len(prompt):].strip()
+            
+            # Extract everything after "Your solution:"
+            if "Your solution:" in response:
+                generated_code = response.split("Your solution:")[-1].strip()
+            else:
+                generated_code = response[len(prompt):].strip()
             
             # Clean up the generated code
-            generated_code = generated_code.strip('`').strip()  # Remove any markdown backticks
-            if not generated_code.startswith('def'):
-                # Try to find the function definition
-                if f'def {entry_point}' in generated_code:
-                    generated_code = generated_code[generated_code.find(f'def {entry_point}'):]
+            generated_code = generated_code.strip('`').strip()
             
-            logging.info(f"\nGenerated code:\n{generated_code}\n")
+            # Log the full interaction for debugging
+            logging.info(f"\nPrompt:\n{prompt}\n")
+            logging.info(f"Raw response:\n{response}\n")
+            logging.info(f"Extracted code:\n{generated_code}\n")
             
-            if not generated_code:
-                logging.error("Model generated empty response")
+            if not generated_code or not generated_code.startswith("def"):
+                logging.error("Invalid code generation")
                 total += 1
                 continue
-                
-        except Exception as e:
-            logging.error(f"Error generating code: {e}")
-            total += 1
-            continue
 
-        try:
             # Extract the function from the generated code
             func_code = extract_function(generated_code, entry_point)
             if func_code is None:
