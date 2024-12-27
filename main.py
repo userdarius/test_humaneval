@@ -78,19 +78,10 @@ def execute_test_case(func_obj, test_case, test_env):
 
 def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1):
     """
-    Evaluate model using pass@k metric.
-
-    Args:
-        model: The model to evaluate
-        tokenizer: The tokenizer
-        dataset: The evaluation dataset
-        num_problems: Number of problems to evaluate
-        n_samples: Number of samples to generate per problem
-        k: k in pass@k metric
+    Evaluate the model on the dataset.
     """
     results = []
     device = next(model.parameters()).device
-
     sampled_problems = np.random.choice(len(dataset), size=num_problems, replace=False)
 
     for idx in tqdm(sampled_problems):
@@ -98,7 +89,6 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
         question = item["question"]
         entry_point = item["entry_point"]
         test_code = item["test_code"]
-
         correct_samples = 0
 
         for _ in range(n_samples):
@@ -117,7 +107,7 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
                         attention_mask=attention_mask,
                         max_new_tokens=1024,
                         do_sample=True,
-                        temperature=0.5,  # Higher temperature for more diversity
+                        temperature=0.5,
                         top_p=0.95,
                         num_beams=5,
                         pad_token_id=tokenizer.eos_token_id,
@@ -129,10 +119,16 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
                     )
 
                 response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
                 logging.info(f"\nGenerated code:\n{response}\n")
 
-                # Extract the function definition from the response
+                # Try running tests on raw response first
+                test_env = create_test_env()
+                if try_run_tests(response, entry_point, test_code, test_env):
+                    correct_samples += 1
+                    logging.info("✓ Sample passed all tests on raw response")
+                    continue
+
+                # Extract function if raw response failed
                 if "def " + entry_point in response:
                     generated_code = response[response.find("def " + entry_point) :]
                     for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
@@ -141,13 +137,28 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
                 else:
                     generated_code = response[len(question) :].strip()
 
+                # Try tests on extracted function
+                test_env = create_test_env()
+                if try_run_tests(generated_code, entry_point, test_code, test_env):
+                    correct_samples += 1
+                    logging.info("✓ Sample passed all tests after function extraction")
+                    continue
+
+                # Add missing syntax elements if needed
                 if not generated_code.strip().endswith(":"):
                     if not ":" in generated_code:
                         generated_code += ":"
-
                 if not "\n" in generated_code:
                     generated_code += "\n    pass"
 
+                # Try tests after syntax fixing
+                test_env = create_test_env()
+                if try_run_tests(generated_code, entry_point, test_code, test_env):
+                    correct_samples += 1
+                    logging.info("✓ Sample passed all tests after syntax fixing")
+                    continue
+
+                # Fix indentation as last resort
                 lines = generated_code.split("\n")
                 fixed_lines = []
                 base_indent = None
@@ -166,41 +177,18 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
                                 if stripped.strip() and not stripped.startswith("def")
                                 else stripped
                             )
-                
+
                 fixed_code = "\n".join(fixed_lines)
+                logging.info(f"\nFinal fixed code:\n{fixed_code}\n")
 
-                logging.info(f"\nFixed code:\n{fixed_code}\n")
-
-                test_env = {
-                    "__builtins__": __builtins__,
-                    "List": List,
-                    "Tuple": Tuple,
-                    "Any": Any,
-                    "Optional": Optional,
-                    "Union": Union,
-                    "Dict": Dict,
-                    "mean": statistics.mean,
-                    "candidate": None,
-                }
-
-                exec(generated_code, test_env)
-                test_env["candidate"] = test_env[entry_point]
-
-                test_results = []
-                for test_case in test_code.split("\n"):
-                    test_case = test_case.strip()
-                    if test_case.startswith("assert"):
-                        try:
-                            exec(test_case, test_env)
-                            test_results.append(True)
-                        except Exception:
-                            test_results.append(False)
-
-                if test_results and all(test_results):
+                # Try tests on fully fixed code
+                test_env = create_test_env()
+                if try_run_tests(fixed_code, entry_point, test_code, test_env):
                     correct_samples += 1
-                    logging.info("✓ Sample passed all tests")
-                else:
-                    logging.info("✗ Sample failed some tests")
+                    logging.info("✓ Sample passed all tests after full fixing")
+                    continue
+
+                logging.info("✗ Sample failed all test attempts")
 
             except Exception as e:
                 logging.error(f"Error: {e}")
@@ -212,6 +200,34 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
 
     mean_pass_at_k = sum(results) / len(results) if results else 0
     return mean_pass_at_k
+
+
+def create_test_env():
+    return {
+        "__builtins__": __builtins__,
+        "List": List,
+        "Tuple": Tuple,
+        "Any": Any,
+        "Optional": Optional,
+        "Union": Union,
+        "Dict": Dict,
+        "mean": statistics.mean,
+        "candidate": None,
+    }
+
+
+def try_run_tests(code, entry_point, test_code, test_env):
+    try:
+        exec(code, test_env)
+        test_env["candidate"] = test_env[entry_point]
+
+        for test_case in test_code.split("\n"):
+            test_case = test_case.strip()
+            if test_case.startswith("assert"):
+                exec(test_case, test_env)
+        return True
+    except Exception:
+        return False
 
 
 def assert_wrapper(condition, *args, **kwargs):
