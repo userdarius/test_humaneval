@@ -13,15 +13,17 @@ def load_df(name, seed):
     all_data = df["test"]
 
     def reformat_data(data):
-        full_solution = data["test"]
-
         return {
-            "question": f"Write a Python function that implements the following function signature and description. You must implement the function and not leave any '# your code goes here' or 'pass' or '...':\n{data['prompt']}",
-            "answers": {"text": [full_solution]},
-            "context": data["test"],  # Store test cases as context
+            "question": (
+                "Implement the following Python function without using placeholders like "
+                "'# your code here', 'pass', or '...':\n\n"
+                f"{data['prompt']}"
+            ),
+            "answers": {"text": [data["test"]]},
+            "context": data["test"],
             "id": data["task_id"],
             "entry_point": data["entry_point"],
-            "test_code": data["test"],  # Store original test code for evaluation
+            "test_code": data["test"],
         }
 
     formatted_data = [reformat_data(d) for d in all_data]
