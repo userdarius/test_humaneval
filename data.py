@@ -16,7 +16,7 @@ def load_df(name, seed):
         full_solution = data["test"]
 
         return {
-            "question": f"Write a Python function that implements the following function signature and description:\n{data['prompt']}",
+            "question": f"Write a Python function that implements the following function signature and description. You must implement the function and not leave any placeholders:\n{data['prompt']}",
             "answers": {"text": [full_solution]},
             "context": data["test"],  # Store test cases as context
             "id": data["task_id"],
