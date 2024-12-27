@@ -132,14 +132,14 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
 
                 logging.info(f"\nGenerated code:\n{response}\n")
 
-                # # Extract the function definition from the response
-                # if "def " + entry_point in response:
-                #     generated_code = response[response.find("def " + entry_point) :]
-                #     for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
-                #         if ending in generated_code:
-                #             generated_code = generated_code.split(ending)[0]
-                # else:
-                #     generated_code = response[len(question) :].strip()
+                # Extract the function definition from the response
+                if "def " + entry_point in response:
+                    generated_code = response[response.find("def " + entry_point) :]
+                    for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
+                        if ending in generated_code:
+                            generated_code = generated_code.split(ending)[0]
+                else:
+                    generated_code = response[len(question) :].strip()
 
                 # if not generated_code.strip().endswith(":"):
                 #     if not ":" in generated_code:
@@ -183,7 +183,7 @@ def evaluate_model(model, tokenizer, dataset, num_problems=5, n_samples=10, k=1)
                     "candidate": None,
                 }
 
-                exec(response, test_env)
+                exec(generated_code, test_env)
                 test_env["candidate"] = test_env[entry_point]
 
                 test_results = []
