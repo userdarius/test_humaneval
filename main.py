@@ -144,21 +144,31 @@ Write your solution here, starting with 'def {entry_point}':
                     total += 1
                     continue
 
-            # Create a new namespace for the function
-            namespace = {}
-
+            # Create a new namespace for the function with required imports
+            namespace = {
+                'List': list,  # Basic replacement for typing.List
+                '__builtins__': __builtins__,
+            }
+            
+            # Add typing imports
+            exec('from typing import List, Optional, Union, Dict, Tuple, Any', namespace)
+            
             # Execute the function definition
             exec(func_code, namespace)
 
             # Get the function object
             func_obj = namespace[entry_point]
 
-            # Prepare the test environment with built-ins and the function
+            # Prepare the test environment with all necessary imports
             test_env = {
                 entry_point: func_obj,
                 "assert": assert_wrapper,
-                "__builtins__": __builtins__,  # Add Python built-ins
+                "__builtins__": __builtins__,
+                'List': list,
             }
+            
+            # Add typing imports to test environment as well
+            exec('from typing import List, Optional, Union, Dict, Tuple, Any', test_env)
 
             # Execute test cases
             test_cases = test_code.split("\n")
