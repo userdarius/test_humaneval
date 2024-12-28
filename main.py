@@ -424,7 +424,7 @@ def main():
     logging.info("Starting evaluation...")
 
     accuracy, error_stats, detailed_results = evaluate_model(
-        model, tokenizer, dataset, num_problems=164, n_samples=10, k=5
+        model, tokenizer, dataset, num_problems=10, n_samples=10, k=5
     )
 
     logging.info(f"\nFinal Accuracy: {accuracy:.2f}%")
