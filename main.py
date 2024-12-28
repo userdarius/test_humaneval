@@ -539,13 +539,16 @@ def main():
     model_name = "meta-llama/Llama-3.2-3B"  # need to add HF_TOKEN
 
     # Load dataset
+    logging.info("Loading dataset...")
     dataset = get_dataset("openai_humaneval", seed=42)
 
     # Load model and tokenizer
     logging.info("Loading model and tokenizer...")
     model, tokenizer = load_model_and_tokenizer(model_name)
 
+
     # Load entailment model
+    logging.info("Loading entailment model...")
     entailment_model = EntailmentDeberta()
 
     # No need to manually move model to device since we're using device_map="auto"
