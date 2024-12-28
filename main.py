@@ -71,6 +71,9 @@ def execute_test_case(func_obj, test_case, test_env):
     except TypeError as e:
         logging.error(f"Type error in implementation: {str(e)}")
         return False
+    except timeout_decorator.TimeoutError:
+        logging.error("Test execution timed out - likely infinite loop detected")
+        return False
     except Exception as e:
         logging.error(f"Error executing test case: {type(e).__name__}: {str(e)}")
         return False
@@ -275,19 +278,27 @@ def create_test_env():
 
 def try_run_tests(code, entry_point, test_code, test_env):
     try:
-        exec(code, test_env)
-        test_env["candidate"] = test_env[entry_point]
+        # Add timeout for the entire code execution
+        @timeout_decorator.timeout(10)  # 10 second timeout for entire test suite
+        def run_code_with_timeout():
+            exec(code, test_env)
+            test_env["candidate"] = test_env[entry_point]
 
-        for test_case in test_code.split("\n"):
-            test_case = test_case.strip()
-            if test_case.startswith("assert"):
-                try:
-                    exec(test_case, test_env)
-                except Exception as e:
-                    logging.error(f"Test failed: {test_case}")
-                    logging.error(f"Error: {str(e)}")
-                    return False
-        return True
+            for test_case in test_code.split("\n"):
+                test_case = test_case.strip()
+                if test_case.startswith("assert"):
+                    try:
+                        exec(test_case, test_env)
+                    except Exception as e:
+                        logging.error(f"Test failed: {test_case}")
+                        logging.error(f"Error: {str(e)}")
+                        return False
+            return True
+
+        return run_code_with_timeout()
+    except timeout_decorator.TimeoutError:
+        logging.error("Code execution timed out - likely infinite loop detected")
+        return False
     except Exception as e:
         logging.error(f"Setup failed: {str(e)}")
         return False
