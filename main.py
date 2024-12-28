@@ -131,14 +131,62 @@ def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
                 # Extract function if raw response failed
                 if "def " + entry_point in response:
                     start = response.find("def " + entry_point)
-                    # Find first occurrence of fully blank line or text starting with uppercase after function
                     generated_code = response[start:]
-                    for idx, line in enumerate(generated_code.split("\n")):
-                        if line.strip() and not line.strip().startswith(
-                            (" ", "def", "return", "#", '"', "assert", "test_", "Test")
-                        ):
-                            generated_code = "\n".join(generated_code.split("\n")[:idx])
-                            break
+
+                    # First try AST parsing
+                    try:
+                        tree = ast.parse(generated_code)
+                        for node in ast.walk(tree):
+                            if (
+                                isinstance(node, ast.FunctionDef)
+                                and node.name == entry_point
+                            ):
+                                end = node.end_lineno
+                                generated_code = "\n".join(
+                                    generated_code.split("\n")[:end]
+                                )
+                                break
+                    except SyntaxError:
+                        # Fallback: manual parsing
+                        lines = generated_code.split("\n")
+                        result = []
+                        in_docstring = False
+                        docstring_delim = 0
+
+                        for line in lines:
+                            stripped = line.strip()
+
+                            # Track docstring state
+                            if '"""' in line or "'''" in line:
+                                docstring_delim += line.count('"""') + line.count("'''")
+                                in_docstring = docstring_delim % 2 != 0
+
+                            # Check for end of function
+                            if (
+                                not in_docstring
+                                and stripped
+                                and not (
+                                    line[0].isspace()
+                                    or stripped.startswith(
+                                        (
+                                            "def",
+                                            "return",
+                                            "#",
+                                            '"',
+                                            "'",
+                                            "assert",
+                                            "test_",
+                                            "Test",
+                                        )
+                                    )
+                                    or ">>>" in line
+                                )
+                            ):
+                                break
+
+                            result.append(line)
+
+                        generated_code = "\n".join(result)
                 else:
                     generated_code = ""
 
