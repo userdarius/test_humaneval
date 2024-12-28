@@ -77,18 +77,21 @@ def logsumexp_by_id(semantic_ids, log_likelihoods, agg="sum_normalized"):
 
 
 def predictive_entropy(log_probs):
-    """Compute MC estimate of entropy.
-
-    `E[-log p(x)] ~= -1/N sum_i log p(x_i)`, i.e. the average token likelihood.
-    """
-
-    entropy = -np.sum(log_probs) / len(log_probs)
-
-    return entropy
+    """Compute MC estimate of entropy with numerical stability."""
+    if len(log_probs) == 0:
+        return 0.0
+    # Add small epsilon to avoid -inf
+    eps = 1e-10
+    entropy = -np.sum(log_probs) / (len(log_probs) + eps)
+    return np.clip(entropy, -1e6, 1e6)  # Clip to reasonable range
 
 
 def predictive_entropy_rao(log_probs):
-    entropy = -np.sum(np.exp(log_probs) * log_probs)
+    # Add numerical stability
+    max_log_prob = np.max(log_probs)
+    normalized_probs = np.exp(log_probs - max_log_prob)
+    normalized_probs = normalized_probs / np.sum(normalized_probs)  # Ensure sum to 1
+    entropy = -np.sum(normalized_probs * log_probs)
     return entropy
 
 
@@ -114,4 +117,3 @@ def cluster_assignment_entropy(semantic_ids):
     assert np.isclose(probabilities.sum(), 1)
     entropy = -(probabilities * np.log(probabilities)).sum()
     return entropy
-

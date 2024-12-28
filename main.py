@@ -86,6 +86,11 @@ class ErrorTracker:
 def extract_function_body(code_string):
     """Extract just the function body, excluding signature and docstring."""
     try:
+        # Clean the input code first
+        code_lines = code_string.split("\n")
+        # Remove empty lines at start and end
+        code_string = "\n".join(line for line in code_lines if line.strip())
+
         # Parse the code
         tree = ast.parse(code_string)
 
@@ -104,40 +109,53 @@ def extract_function_body(code_string):
                 # Convert body back to code
                 body_code = []
                 for stmt in body:
-                    # Get the line numbers for this statement
-                    start = stmt.lineno - node.lineno
+                    # Get the source lines for this statement
+                    start = stmt.lineno - node.lineno  # Relative to function start
                     if hasattr(stmt, "end_lineno"):
                         end = stmt.end_lineno - node.lineno + 1
                     else:
                         end = start + 1
 
-                    # Extract the relevant lines from the original code
+                    # Get the lines
                     lines = code_string.split("\n")
-                    stmt_lines = lines[start:end]
+                    if start < len(lines):
+                        stmt_lines = lines[start : min(end, len(lines))]
 
-                    # Remove any common indentation
-                    if stmt_lines:
-                        # Find minimum indentation
-                        indents = [
-                            len(line) - len(line.lstrip())
-                            for line in stmt_lines
-                            if line.strip()
-                        ]
-                        if indents:
-                            min_indent = min(indents)
-                            stmt_lines = [
-                                line[min_indent:] if line.strip() else ""
-                                for line in stmt_lines
-                            ]
+                        # Handle indentation
+                        if stmt_lines:
+                            # Find base indentation level (first non-empty line)
+                            indent_base = None
+                            for line in stmt_lines:
+                                if line.strip():
+                                    indent_base = len(line) - len(line.lstrip())
+                                    break
 
-                    body_code.extend(stmt_lines)
+                            if indent_base is not None:
+                                # Remove base indentation from all lines
+                                stmt_lines = [
+                                    (
+                                        line[indent_base:]
+                                        if line.strip() and len(line) >= indent_base
+                                        else line.strip()
+                                    )
+                                    for line in stmt_lines
+                                ]
 
-                return "\n".join(line for line in body_code if line.strip())
-        return code_string  # Return original if no function found
+                        body_code.extend(stmt_lines)
+
+                # Join lines and ensure consistent indentation
+                processed_lines = []
+                for line in body_code:
+                    if line.strip():  # Non-empty line
+                        processed_lines.append(line)
+
+                return "\n".join(processed_lines)
+
+        return ""  # Return empty string if no function found (instead of original)
 
     except Exception as e:
         logging.error(f"Error extracting function body: {e}")
-        return code_string  # Return original on error
+        return ""  # Return empty string on error (instead of original)
 
 
 @timeout_decorator.timeout(5)  # 5 second timeout for execution
@@ -218,7 +236,7 @@ def evaluate_model(
                     )
 
                 # Calculate sequence log probability
-                if hasattr(outputs, 'scores') and outputs.scores:
+                if hasattr(outputs, "scores") and outputs.scores:
                     scores = outputs.scores
                     generated_ids = outputs.sequences[0]
                     log_prob = 0
@@ -227,7 +245,9 @@ def evaluate_model(
                             # Handle legacy format
                             score = score[0]
                         step_log_probs = torch.log_softmax(score, dim=-1)
-                        if step < len(generated_ids) - 1:  # Ensure we don't go out of bounds
+                        if (
+                            step < len(generated_ids) - 1
+                        ):  # Ensure we don't go out of bounds
                             token = generated_ids[step + 1]
                             log_prob += step_log_probs[0, token].item()
                 else:
@@ -360,25 +380,32 @@ def evaluate_model(
             # Calculate semantic entropy
             semantic_entropy = cluster_assignment_entropy(semantic_ids)
 
-            # Calculate predictive entropy metrics
+            # Calculate predictive entropy metrics with protection against invalid values
             pred_entropy = predictive_entropy(solution_log_probs)
             pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
 
-            # Extract function bodies for comparison
+            # Clean and normalize both canonical and generated solutions
             canonical_body = extract_function_body(canonical_solution)
-            generated_bodies = [
-                extract_function_body(sol) for sol in generated_solutions
-            ]
+            generated_bodies = []
+            for sol in generated_solutions:
+                try:
+                    body = extract_function_body(sol)
+                    if body:  # Only add if extraction successful
+                        generated_bodies.append(body)
+                except Exception as e:
+                    logging.warning(f"Failed to extract function body: {e}")
+                    continue
 
-            # Compare with canonical solution
-            canonical_alignment = context_entails_response(
-                canonical_body, generated_bodies, entailment_model
-            )
-
-            # Check if canonical solution entails our solutions
-            reverse_alignment = context_entails_response(
-                canonical_solution, generated_solutions, entailment_model
-            )
+            if generated_bodies:  # Only compute alignments if we have valid bodies
+                canonical_alignment = context_entails_response(
+                    canonical_body, generated_bodies, entailment_model
+                )
+                reverse_alignment = context_entails_response(
+                    canonical_body, generated_bodies, entailment_model
+                )
+            else:
+                canonical_alignment = 0.0
+                reverse_alignment = 0.0
 
             semantic_metrics = {
                 "semantic_entropy": semantic_entropy,
@@ -555,7 +582,6 @@ def main():
     # Load model and tokenizer
     logging.info("Loading model and tokenizer...")
     model, tokenizer = load_model_and_tokenizer(model_name)
-
 
     # Load entailment model
     logging.info("Loading entailment model...")
