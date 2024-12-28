@@ -206,23 +206,33 @@ def evaluate_model(
                         temperature=0.2,
                         top_p=0.8,
                         num_beams=5,
-                        output_scores=True,  # Enable score output
-                        return_dict_in_generate=True,  # Return as dict for score access
+                        output_scores=True,
+                        return_dict_in_generate=True,
                         pad_token_id=tokenizer.eos_token_id,
                         repetition_penalty=1.2,
                         length_penalty=1.0,
                         min_length=50,
                         no_repeat_ngram_size=2,
                         early_stopping=False,
+                        return_legacy_cache=False,
                     )
 
                 # Calculate sequence log probability
-                scores = outputs.scores
-                generated_ids = outputs.sequences[0]
-                log_prob = 0
-                for step, token in enumerate(generated_ids[1:]):  # Skip first token
-                    step_log_probs = torch.log_softmax(scores[step], dim=-1)
-                    log_prob += step_log_probs[0, token].item()
+                if hasattr(outputs, 'scores') and outputs.scores:
+                    scores = outputs.scores
+                    generated_ids = outputs.sequences[0]
+                    log_prob = 0
+                    for step, score in enumerate(scores):
+                        if isinstance(score, tuple):
+                            # Handle legacy format
+                            score = score[0]
+                        step_log_probs = torch.log_softmax(score, dim=-1)
+                        if step < len(generated_ids) - 1:  # Ensure we don't go out of bounds
+                            token = generated_ids[step + 1]
+                            log_prob += step_log_probs[0, token].item()
+                else:
+                    # If scores are not available, use a default value
+                    log_prob = 0.0
 
                 response = tokenizer.decode(generated_ids, skip_special_tokens=True)
                 logging.info(f"\nRaw generated code:\n{response}\n")
