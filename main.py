@@ -119,7 +119,7 @@ def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
                     )
 
                 response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-                logging.info(f"\nGenerated code:\n{response}\n")
+                logging.info(f"\nRaw generated code:\n{response}\n")
 
                 # Try running tests on raw response first
                 test_env = create_test_env()
@@ -130,12 +130,19 @@ def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
 
                 # Extract function if raw response failed
                 if "def " + entry_point in response:
-                    generated_code = response[response.find("def " + entry_point) :]
-                    for ending in ["\n\n", "\n# Test", "\n# Example", "\nif __name__"]:
-                        if ending in generated_code:
-                            generated_code = generated_code.split(ending)[0]
+                    start = response.find("def " + entry_point)
+                    # Find first occurrence of fully blank line or text starting with uppercase after function
+                    generated_code = response[start:]
+                    for idx, line in enumerate(generated_code.split("\n")):
+                        if line.strip() and not line.strip().startswith(
+                            (" ", "def", "return", "#", '"', "assert", "test_", "Test")
+                        ):
+                            generated_code = "\n".join(generated_code.split("\n")[:idx])
+                            break
                 else:
-                    generated_code = response[len(question) :].strip()
+                    generated_code = ""
+
+                logging.info(f"\nExtracted code:\n{generated_code}\n")
 
                 # Try tests on extracted function
                 test_env = create_test_env()
@@ -150,6 +157,8 @@ def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
                         generated_code += ":"
                 if not "\n" in generated_code:
                     generated_code += "\n    pass"
+
+                logging.info(f"\nMissing syntax code fixed:\n{generated_code}\n")
 
                 # Try tests after syntax fixing
                 test_env = create_test_env()
