@@ -16,6 +16,7 @@ import statistics
 import numpy as np
 from dataclasses import dataclass, asdict
 from collections import defaultdict
+from model import EntailmentDeberta
 
 logging.basicConfig(level=logging.INFO)
 
@@ -417,6 +418,9 @@ def main():
     logging.info("Loading model and tokenizer...")
     model, tokenizer = load_model_and_tokenizer(model_name)
 
+    # Load entailment model
+    # entailment_model = EntailmentDeberta()
+
     # No need to manually move model to device since we're using device_map="auto"
     # The model will be automatically placed on available GPUs
 
@@ -424,7 +428,7 @@ def main():
     logging.info("Starting evaluation...")
 
     accuracy, error_stats, detailed_results = evaluate_model(
-        model, tokenizer, dataset, num_problems=10, n_samples=10, k=5
+        model, tokenizer, dataset, num_problems=164, n_samples=10, k=5
     )
 
     logging.info(f"\nFinal Accuracy: {accuracy:.2f}%")
