@@ -85,9 +85,8 @@ def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
     """
     results = []
     device = next(model.parameters()).device
-    sampled_problems = np.random.choice(len(dataset), size=num_problems, replace=False)
 
-    for idx in tqdm(sampled_problems):
+    for idx in tqdm(range(num_problems)):
         item = dataset[idx]
         question = item["question"]
         entry_point = item["entry_point"]
@@ -256,7 +255,7 @@ def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
 
         pass_at_k = calculate_pass_at_k(n_samples, correct_samples, k)
         results.append(pass_at_k)
-        logging.info(f"Problem pass@{k}: {pass_at_k:.2f}")
+        logging.info(f"Problem {idx} pass@{k}: {pass_at_k:.2f}")
 
     mean_pass_at_k = sum(results) / len(results) if results else 0
     return mean_pass_at_k
@@ -352,7 +351,7 @@ def main():
     # Evaluate
     logging.info("Starting evaluation...")
     accuracy = evaluate_model(
-        model, tokenizer, dataset, num_problems=100, n_samples=10, k=5
+        model, tokenizer, dataset, num_problems=164, n_samples=10, k=5
     )
 
     logging.info(f"\nFinal Accuracy: {accuracy:.2f}%")
