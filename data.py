@@ -14,6 +14,7 @@ def get_dataset(name, seed):
             "id": data["task_id"],
             "entry_point": data["entry_point"],
             "test_code": data["test"],
+            "canonical_solution": data["canonical_solution"],
         }
         for data in df["test"]
     ]

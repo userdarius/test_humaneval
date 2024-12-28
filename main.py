@@ -17,6 +17,13 @@ import numpy as np
 from dataclasses import dataclass, asdict
 from collections import defaultdict
 from model import EntailmentDeberta
+from scores import (
+    get_semantic_ids,
+    cluster_assignment_entropy,
+    predictive_entropy,
+    predictive_entropy_rao,
+    context_entails_response,
+)
 
 logging.basicConfig(level=logging.INFO)
 
@@ -76,43 +83,61 @@ class ErrorTracker:
         return asdict(self.total_errors)
 
 
-def extract_function(code_string, function_name):
-    """Extract a function definition from a code string."""
+def extract_function_body(code_string):
+    """Extract just the function body, excluding signature and docstring."""
     try:
-        # Clean up the code string
-        code_string = code_string.strip()
+        # Parse the code
+        tree = ast.parse(code_string)
 
-        # If the code starts with the function definition, return it directly
-        if code_string.startswith(f"def {function_name}"):
-            return code_string
-
-        # Try parsing as AST
-        try:
-            tree = ast.parse(code_string)
-        except SyntaxError:
-            # Try adding a newline at the start in case indentation is wrong
-            try:
-                tree = ast.parse("\n" + code_string)
-            except SyntaxError:
-                return None
-
-        # Find the function definition
+        # Find the first function definition
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef) and node.name == function_name:
-                # Get the line numbers for the function
-                start = node.lineno - 1
-                end = node.end_lineno
+            if isinstance(node, ast.FunctionDef):
+                # Skip docstring if present
+                body = node.body
+                if (
+                    len(body) > 0
+                    and isinstance(body[0], ast.Expr)
+                    and isinstance(body[0].value, ast.Str)
+                ):
+                    body = body[1:]
 
-                # Extract the function lines
-                lines = code_string.split("\n")
-                function_code = "\n".join(lines[start:end])
-                return function_code
+                # Convert body back to code
+                body_code = []
+                for stmt in body:
+                    # Get the line numbers for this statement
+                    start = stmt.lineno - node.lineno
+                    if hasattr(stmt, "end_lineno"):
+                        end = stmt.end_lineno - node.lineno + 1
+                    else:
+                        end = start + 1
 
-        return None
+                    # Extract the relevant lines from the original code
+                    lines = code_string.split("\n")
+                    stmt_lines = lines[start:end]
+
+                    # Remove any common indentation
+                    if stmt_lines:
+                        # Find minimum indentation
+                        indents = [
+                            len(line) - len(line.lstrip())
+                            for line in stmt_lines
+                            if line.strip()
+                        ]
+                        if indents:
+                            min_indent = min(indents)
+                            stmt_lines = [
+                                line[min_indent:] if line.strip() else ""
+                                for line in stmt_lines
+                            ]
+
+                    body_code.extend(stmt_lines)
+
+                return "\n".join(line for line in body_code if line.strip())
+        return code_string  # Return original if no function found
 
     except Exception as e:
-        logging.error(f"Error extracting function: {e}")
-        return None
+        logging.error(f"Error extracting function body: {e}")
+        return code_string  # Return original on error
 
 
 @timeout_decorator.timeout(5)  # 5 second timeout for execution
@@ -137,20 +162,28 @@ def execute_test_case(func_obj, test_case, test_env):
         return False
 
 
-def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
+def evaluate_model(
+    model, tokenizer, dataset, num_problems, n_samples, k, entailment_model
+):
     """
-    Evaluate the model on the dataset with error tracking for final attempts.
+    Evaluate the model on the dataset with error tracking and semantic uncertainty metrics.
     """
     results = []
     error_tracker = ErrorTracker()
+
     device = next(model.parameters()).device
 
     for idx in tqdm(range(num_problems)):
         item = dataset[idx]
         question = item["question"]
+        canonical_solution = item["canonical_solution"]
         entry_point = item["entry_point"]
         test_code = item["test_code"]
         correct_samples = 0
+
+        # Store all generated solutions and their scores for semantic analysis
+        generated_solutions = []
+        solution_log_probs = []
 
         for sample_idx in range(n_samples):
             error_tracker.increment_total(idx)
@@ -173,6 +206,8 @@ def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
                         temperature=0.2,
                         top_p=0.8,
                         num_beams=5,
+                        output_scores=True,  # Enable score output
+                        return_dict_in_generate=True,  # Return as dict for score access
                         pad_token_id=tokenizer.eos_token_id,
                         repetition_penalty=1.2,
                         length_penalty=1.0,
@@ -181,13 +216,23 @@ def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
                         early_stopping=False,
                     )
 
-                response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                # Calculate sequence log probability
+                scores = outputs.scores
+                generated_ids = outputs.sequences[0]
+                log_prob = 0
+                for step, token in enumerate(generated_ids[1:]):  # Skip first token
+                    step_log_probs = torch.log_softmax(scores[step], dim=-1)
+                    log_prob += step_log_probs[0, token].item()
+
+                response = tokenizer.decode(generated_ids, skip_special_tokens=True)
                 logging.info(f"\nRaw generated code:\n{response}\n")
 
                 # Try running tests on raw response first
                 test_env = create_test_env()
                 if try_run_tests(response, entry_point, test_code, test_env):
                     correct_samples += 1
+                    generated_solutions.append(response)
+                    solution_log_probs.append(log_prob)
                     logging.info("✓ Sample passed all tests on raw response")
                     continue
 
@@ -284,6 +329,8 @@ def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
                         fixed_code, entry_point, test_code, test_env, error_tracker, idx
                     ):
                         correct_samples += 1
+                        generated_solutions.append(fixed_code)
+                        solution_log_probs.append(log_prob)
                         logging.info("✓ Sample passed all tests after full fixing")
                         continue
 
@@ -294,22 +341,102 @@ def evaluate_model(model, tokenizer, dataset, num_problems, n_samples, k):
                 logging.error(f"Unexpected error: {type(e).__name__}: {str(e)}")
                 continue
 
+        # Calculate semantic metrics if we have solutions
+        semantic_metrics = {}
+        if generated_solutions:
+            # Get semantic clusters
+            semantic_ids = get_semantic_ids(generated_solutions, entailment_model)
+
+            # Calculate semantic entropy
+            semantic_entropy = cluster_assignment_entropy(semantic_ids)
+
+            # Calculate predictive entropy metrics
+            pred_entropy = predictive_entropy(solution_log_probs)
+            pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
+
+            # Extract function bodies for comparison
+            canonical_body = extract_function_body(canonical_solution)
+            generated_bodies = [
+                extract_function_body(sol) for sol in generated_solutions
+            ]
+
+            # Compare with canonical solution
+            canonical_alignment = context_entails_response(
+                canonical_body, generated_bodies, entailment_model
+            )
+
+            # Check if canonical solution entails our solutions
+            reverse_alignment = context_entails_response(
+                canonical_solution, generated_solutions, entailment_model
+            )
+
+            semantic_metrics = {
+                "semantic_entropy": semantic_entropy,
+                "predictive_entropy": pred_entropy,
+                "predictive_entropy_rao": pred_entropy_rao,
+                "num_semantic_clusters": len(set(semantic_ids)),
+                "num_solutions": len(generated_solutions),
+                "canonical_alignment": canonical_alignment,
+                "reverse_alignment": reverse_alignment,
+                "bidirectional_alignment": (canonical_alignment + reverse_alignment)
+                / 2,
+            }
+
         pass_at_k = calculate_pass_at_k(n_samples, correct_samples, k)
         results.append(
             {
+                "problem_id": idx,
                 "pass_at_k": pass_at_k,
                 "error_stats": error_tracker.get_problem_stats(idx),
+                "semantic_metrics": semantic_metrics,
             }
         )
-        logging.info(f"Problem {idx} pass@{k}: {pass_at_k:.2f}")
-        logging.info(
-            f"Error statistics for final attempts: {error_tracker.get_problem_stats(idx)}"
-        )
 
-    mean_pass_at_k = (
-        sum(r["pass_at_k"] for r in results) / len(results) if results else 0
-    )
-    return mean_pass_at_k, results, error_tracker.get_total_stats()
+        logging.info(f"Problem {idx} Results:")
+        logging.info(f"pass@{k}: {pass_at_k:.2f}")
+        if semantic_metrics:
+            logging.info(f"Semantic metrics: {semantic_metrics}")
+            logging.info(
+                f"Canonical solution alignment: {semantic_metrics['canonical_alignment']:.2f}"
+            )
+            logging.info(
+                f"Bidirectional alignment: {semantic_metrics['bidirectional_alignment']:.2f}"
+            )
+
+    # Calculate aggregate metrics
+    aggregate_metrics = {
+        "mean_pass_at_k": np.mean([r["pass_at_k"] for r in results]),
+        "mean_semantic_entropy": np.mean(
+            [
+                r["semantic_metrics"].get("semantic_entropy", 0)
+                for r in results
+                if r["semantic_metrics"]
+            ]
+        ),
+        "mean_predictive_entropy": np.mean(
+            [
+                r["semantic_metrics"].get("predictive_entropy", 0)
+                for r in results
+                if r["semantic_metrics"]
+            ]
+        ),
+        "mean_canonical_alignment": np.mean(
+            [
+                r["semantic_metrics"].get("canonical_alignment", 0)
+                for r in results
+                if r["semantic_metrics"]
+            ]
+        ),
+        "mean_bidirectional_alignment": np.mean(
+            [
+                r["semantic_metrics"].get("bidirectional_alignment", 0)
+                for r in results
+                if r["semantic_metrics"]
+            ]
+        ),
+    }
+
+    return aggregate_metrics, results, error_tracker.get_total_stats()
 
 
 def create_test_env():
@@ -419,7 +546,7 @@ def main():
     model, tokenizer = load_model_and_tokenizer(model_name)
 
     # Load entailment model
-    # entailment_model = EntailmentDeberta()
+    entailment_model = EntailmentDeberta()
 
     # No need to manually move model to device since we're using device_map="auto"
     # The model will be automatically placed on available GPUs
@@ -428,7 +555,13 @@ def main():
     logging.info("Starting evaluation...")
 
     accuracy, error_stats, detailed_results = evaluate_model(
-        model, tokenizer, dataset, num_problems=164, n_samples=10, k=5
+        model,
+        tokenizer,
+        dataset,
+        num_problems=164,
+        n_samples=10,
+        k=5,
+        entailment_model=entailment_model,
     )
 
     logging.info(f"\nFinal Accuracy: {accuracy:.2f}%")
