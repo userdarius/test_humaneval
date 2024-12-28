@@ -86,10 +86,20 @@ class ErrorTracker:
 def extract_function_body(code_string):
     """Extract just the function body, excluding signature and docstring."""
     try:
-        # Clean the input code first
-        code_lines = code_string.split("\n")
-        # Remove empty lines at start and end
-        code_string = "\n".join(line for line in code_lines if line.strip())
+        # First, normalize any initial indentation
+        lines = code_string.split("\n")
+        min_indent = float("inf")
+
+        # Find minimum indentation of non-empty lines
+        for line in lines:
+            if line.strip():
+                indent = len(line) - len(line.lstrip())
+                min_indent = min(min_indent, indent)
+
+        # Normalize the indentation
+        if min_indent != float("inf"):
+            lines = [line[min_indent:] if line.strip() else line for line in lines]
+        code_string = "\n".join(lines)
 
         # Parse the code
         tree = ast.parse(code_string)
@@ -97,65 +107,29 @@ def extract_function_body(code_string):
         # Find the first function definition
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef):
-                # Skip docstring if present
+                # Skip the function definition line and docstring if present
                 body = node.body
                 if (
                     len(body) > 0
                     and isinstance(body[0], ast.Expr)
                     and isinstance(body[0].value, ast.Str)
                 ):
-                    body = body[1:]
+                    body = body[1:]  # Skip docstring
 
-                # Convert body back to code
-                body_code = []
-                for stmt in body:
-                    # Get the source lines for this statement
-                    start = stmt.lineno - node.lineno  # Relative to function start
-                    if hasattr(stmt, "end_lineno"):
-                        end = stmt.end_lineno - node.lineno + 1
+                # Get just the actual implementation lines
+                result = []
+                for b in body:
+                    if isinstance(b, ast.Return):
+                        result.append(ast.unparse(b).strip())
                     else:
-                        end = start + 1
+                        result.append(ast.unparse(b))
 
-                    # Get the lines
-                    lines = code_string.split("\n")
-                    if start < len(lines):
-                        stmt_lines = lines[start : min(end, len(lines))]
+                return "\n".join(result)
 
-                        # Handle indentation
-                        if stmt_lines:
-                            # Find base indentation level (first non-empty line)
-                            indent_base = None
-                            for line in stmt_lines:
-                                if line.strip():
-                                    indent_base = len(line) - len(line.lstrip())
-                                    break
-
-                            if indent_base is not None:
-                                # Remove base indentation from all lines
-                                stmt_lines = [
-                                    (
-                                        line[indent_base:]
-                                        if line.strip() and len(line) >= indent_base
-                                        else line.strip()
-                                    )
-                                    for line in stmt_lines
-                                ]
-
-                        body_code.extend(stmt_lines)
-
-                # Join lines and ensure consistent indentation
-                processed_lines = []
-                for line in body_code:
-                    if line.strip():  # Non-empty line
-                        processed_lines.append(line)
-
-                return "\n".join(processed_lines)
-
-        return ""  # Return empty string if no function found (instead of original)
-
+        return ""  # Return empty string if no function found
     except Exception as e:
         logging.error(f"Error extracting function body: {e}")
-        return ""  # Return empty string on error (instead of original)
+        return ""  # Return empty string on error
 
 
 @timeout_decorator.timeout(5)  # 5 second timeout for execution
@@ -593,7 +567,7 @@ def main():
     # Evaluate
     logging.info("Starting evaluation...")
 
-    accuracy, error_stats, detailed_results = evaluate_model(
+    aggregate_metrics, detailed_results, error_stats = evaluate_model(
         model,
         tokenizer,
         dataset,
@@ -603,13 +577,24 @@ def main():
         entailment_model=entailment_model,
     )
 
-    logging.info(f"\nFinal Accuracy: {accuracy:.2f}%")
+    # Print aggregate metrics
+    logging.info("\nFinal Results:")
+    logging.info(f"Mean pass@k: {aggregate_metrics['mean_pass_at_k']:.2f}")
+    logging.info(
+        f"Mean semantic entropy: {aggregate_metrics['mean_semantic_entropy']:.2f}"
+    )
+    logging.info(
+        f"Mean predictive entropy: {aggregate_metrics['mean_predictive_entropy']:.2f}"
+    )
+    logging.info(
+        f"Mean canonical alignment: {aggregate_metrics['mean_canonical_alignment']:.2f}"
+    )
     logging.info(f"Error Statistics:\n{json.dumps(error_stats, indent=2)}")
 
     # Save results
     results = {
         "model_name": model_name,
-        "accuracy": accuracy,
+        "aggregate_metrics": aggregate_metrics,
         "timestamp": datetime.now().isoformat(),
         "num_samples": len(dataset),
         "error_statistics": error_stats,

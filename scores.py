@@ -1,5 +1,5 @@
 import numpy as np
-
+import logging
 
 def context_entails_response(context, responses, model):
     votes = []
@@ -9,44 +9,44 @@ def context_entails_response(context, responses, model):
 
 
 def get_semantic_ids(strings_list, model, strict_entailment=False, example=None):
-    """Group list of predictions into semantic meaning."""
+    """Group list of predictions into semantic meaning with error handling."""
+    if not strings_list:
+        return []
 
     def are_equivalent(text1, text2):
+        try:
+            implication_1 = model.check_implication(text1, text2, example=example)
+            implication_2 = model.check_implication(text2, text1, example=example)
 
-        implication_1 = model.check_implication(text1, text2, example=example)
-        implication_2 = model.check_implication(
-            text2, text1, example=example
-        )  # pylint: disable=arguments-out-of-order
-        assert (implication_1 in [0, 1, 2]) and (implication_2 in [0, 1, 2])
+            if not ((implication_1 in [0, 1, 2]) and (implication_2 in [0, 1, 2])):
+                return False
 
-        if strict_entailment:
-            semantically_equivalent = (implication_1 == 2) and (implication_2 == 2)
+            if strict_entailment:
+                return (implication_1 == 2) and (implication_2 == 2)
+            else:
+                implications = [implication_1, implication_2]
+                return (0 not in implications) and ([1, 1] != implications)
 
-        else:
-            implications = [implication_1, implication_2]
-            # Check if none of the implications are 0 (contradiction) and not both of them are neutral.
-            semantically_equivalent = (0 not in implications) and (
-                [1, 1] != implications
-            )
+        except Exception as e:
+            logging.error(f"Error in semantic comparison: {e}")
+            return False
 
-        return semantically_equivalent
-
-    # Initialise all ids with -1.
     semantic_set_ids = [-1] * len(strings_list)
-    # Keep track of current id.
     next_id = 0
+
     for i, string1 in enumerate(strings_list):
-        # Check if string1 already has an id assigned.
         if semantic_set_ids[i] == -1:
-            # If string1 has not been assigned an id, assign it next_id.
             semantic_set_ids[i] = next_id
             for j in range(i + 1, len(strings_list)):
-                # Search through all remaining strings. If they are equivalent to string1, assign them the same id.
                 if are_equivalent(string1, strings_list[j]):
                     semantic_set_ids[j] = next_id
             next_id += 1
 
-    assert -1 not in semantic_set_ids
+    # Ensure all strings got an ID
+    for i, id_val in enumerate(semantic_set_ids):
+        if id_val == -1:
+            semantic_set_ids[i] = next_id
+            next_id += 1
 
     return semantic_set_ids
 
@@ -80,19 +80,31 @@ def predictive_entropy(log_probs):
     """Compute MC estimate of entropy with numerical stability."""
     if len(log_probs) == 0:
         return 0.0
-    # Add small epsilon to avoid -inf
+
+    # Add small epsilon to avoid division by zero
     eps = 1e-10
     entropy = -np.sum(log_probs) / (len(log_probs) + eps)
-    return np.clip(entropy, -1e6, 1e6)  # Clip to reasonable range
+
+    # Clip to reasonable range
+    return np.clip(entropy, -1e6, 1e6)
 
 
 def predictive_entropy_rao(log_probs):
-    # Add numerical stability
+    """Compute Rao's quadratic entropy with numerical stability."""
+    if len(log_probs) == 0:
+        return 0.0
+
+    # Normalize log probabilities for numerical stability
     max_log_prob = np.max(log_probs)
-    normalized_probs = np.exp(log_probs - max_log_prob)
-    normalized_probs = normalized_probs / np.sum(normalized_probs)  # Ensure sum to 1
-    entropy = -np.sum(normalized_probs * log_probs)
-    return entropy
+    log_probs_shifted = log_probs - max_log_prob
+
+    # Convert to probabilities with numerical stability
+    probs = np.exp(log_probs_shifted)
+    probs = probs / (np.sum(probs) + 1e-10)
+
+    # Calculate entropy
+    entropy = -np.sum(probs * log_probs)
+    return np.clip(entropy, -1e6, 1e6)
 
 
 def cluster_assignment_entropy(semantic_ids):
