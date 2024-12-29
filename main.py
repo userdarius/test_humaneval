@@ -84,39 +84,25 @@ class ErrorTracker:
 
 
 def extract_function_body(code_string):
-    """Extract just the function body, excluding signature and docstring."""
+    """Extract just the function body, excluding signature and docstring.
+    Assumes the code has already been processed and fixed in evaluate_model."""
     try:
-        # First, normalize any initial indentation
-        lines = code_string.split("\n")
-        min_indent = float("inf")
-
-        # Find minimum indentation of non-empty lines
-        for line in lines:
-            if line.strip():
-                indent = len(line) - len(line.lstrip())
-                min_indent = min(min_indent, indent)
-
-        # Normalize the indentation
-        if min_indent != float("inf"):
-            lines = [line[min_indent:] if line.strip() else line for line in lines]
-        code_string = "\n".join(lines)
-
         # Parse the code
         tree = ast.parse(code_string)
 
         # Find the first function definition
         for node in ast.walk(tree):
             if isinstance(node, ast.FunctionDef):
-                # Skip the function definition line and docstring if present
+                # Skip docstring if present
                 body = node.body
                 if (
                     len(body) > 0
                     and isinstance(body[0], ast.Expr)
                     and isinstance(body[0].value, ast.Str)
                 ):
-                    body = body[1:]  # Skip docstring
+                    body = body[1:]
 
-                # Get just the actual implementation lines
+                # Get just the implementation lines
                 result = []
                 for b in body:
                     if isinstance(b, ast.Return):

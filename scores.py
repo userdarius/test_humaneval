@@ -16,7 +16,7 @@ def context_entails_response(context, responses, model):
 
     mean_vote = np.mean(votes)
     logging.info(f"Average implication score: {mean_vote:.3f}")
-    return 2 - mean_vote
+    return np.clip(2 - mean_vote, 0, 1)
 
 
 def get_semantic_ids(strings_list, model, strict_entailment=False, example=None):
