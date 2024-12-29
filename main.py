@@ -316,7 +316,6 @@ def evaluate_model(
                     temperature=0.8,
                     top_p=0.95,  # Nucleus sampling
                     top_k=50,  # Top-k sampling
-                    num_beams=3,  # Can still use some beam search for quality
                     output_scores=True,
                     num_return_sequences=n_samples,
                     return_dict_in_generate=True,
