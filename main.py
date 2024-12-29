@@ -84,81 +84,51 @@ class ErrorTracker:
 
 
 def extract_function_body(code_string):
-    """Extract just the function body, excluding signature and docstring.
-    Assumes the code has already been processed and fixed in evaluate_model."""
+    """Extract just the function body focusing on the actual implementation."""
     try:
-        # Log the input code for debugging
-        logging.debug(f"Attempting to extract function body from:\n{code_string}")
-        
-        # Remove any leading/trailing whitespace
-        code_string = code_string.strip()
-        
-        # Basic validation
-        if not code_string:
-            logging.warning("Empty code string provided")
-            return ""
-            
-        # Handle common formatting issues
-        lines = code_string.split('\n')
-        cleaned_lines = []
+        # Log the input
+        logging.debug(f"Input code:\n{code_string}")
+
+        # First pass: try to find the actual implementation
+        lines = code_string.split("\n")
+        content_lines = []
+        in_implementation = False
+
         for line in lines:
-            # Remove excessive indentation
             stripped = line.strip()
-            if stripped:
-                # Keep def line as is
-                if stripped.startswith('def '):
-                    cleaned_lines.append(line)
-                else:
-                    # Ensure consistent indentation for other lines
-                    cleaned_lines.append('    ' + stripped)
-                    
-        cleaned_code = '\n'.join(cleaned_lines)
-        logging.debug(f"Cleaned code:\n{cleaned_code}")
-        
-        try:
-            tree = ast.parse(cleaned_code)
-        except Exception as e:
-            logging.error(f"AST parsing failed: {e}")
-            # Try one more time with minimal formatting
-            minimal_code = "def dummy():\n    " + code_string.strip()
-            try:
-                tree = ast.parse(minimal_code)
-            except Exception as e:
-                logging.error(f"Minimal code parsing also failed: {e}")
-                return code_string.strip()  # Return stripped original as last resort
 
-        # Extract function body
-        for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
-                body = node.body
-                if (len(body) > 0 and 
-                    isinstance(body[0], ast.Expr) and 
-                    isinstance(body[0].value, ast.Str)):
-                    body = body[1:]  # Skip docstring
+            # Skip empty lines and common non-implementation lines
+            if not stripped or stripped.startswith(
+                ('"""', "'''", "#", "@", "def ", "class ", "if __name__")
+            ):
+                continue
 
-                result = []
-                for b in body:
-                    try:
-                        if isinstance(b, ast.Return):
-                            result.append(ast.unparse(b).strip())
-                        else:
-                            result.append(ast.unparse(b))
-                    except Exception as e:
-                        logging.error(f"Error unparsing node {type(b)}: {e}")
-                        # Try to get raw source if unparsing fails
-                        if hasattr(b, 'value'):
-                            result.append(str(b.value))
+            # Skip docstring blocks
+            if stripped.count('"""') % 2 == 1 or stripped.count("'''") % 2 == 1:
+                in_implementation = not in_implementation
+                continue
 
-                body_code = '\n'.join(result)
-                logging.debug(f"Extracted body:\n{body_code}")
-                return body_code
+            if in_implementation:
+                continue
 
-        logging.warning("No function definition found")
-        return code_string.strip()  # Return stripped original if no function found
+            # This is likely implementation code
+            content_lines.append(stripped)
+
+        if not content_lines:
+            logging.warning("No implementation content found")
+            return ""
+
+        # Join content and normalize basic formatting
+        implementation = "\n".join(content_lines)
+
+        # Log what we found
+        logging.debug(f"Extracted implementation:\n{implementation}")
+
+        return implementation
 
     except Exception as e:
-        logging.error(f"Error extracting function body: {e}\nCode:\n{code_string}")
-        return code_string.strip()  # Return stripped original on error
+        logging.error(f"Error in function body extraction: {e}")
+        return ""
 
 
 @timeout_decorator.timeout(5)  # 5 second timeout for execution
@@ -408,19 +378,29 @@ def evaluate_model(
 
             canonical_body = extract_function_body(canonical_solution)
             generated_bodies = []
+            processed_solutions = []
             for sol in generated_solutions:
-                try:
-                    logging.debug(f"Processing solution:\n{sol}")
-                    body = extract_function_body(sol)
-                    if body:
-                        # Additional validation of extracted body
-                        if len(body.strip().split('\n')) >= 1:  # At least one line of code
-                            generated_bodies.append(body)
-                        else:
-                            logging.warning("Extracted body was too short or empty")
-                except Exception as e:
-                    logging.warning(f"Failed to extract function body: {e}")
-                    continue
+                implementation = extract_function_body(sol)
+                if implementation:
+                    processed_solutions.append(implementation)
+                    
+            if processed_solutions:
+                logging.info(f"Successfully extracted {len(processed_solutions)} implementations")
+                
+                # Get semantic clusters using processed solutions
+                semantic_ids = get_semantic_ids(processed_solutions, entailment_model)
+                
+                # Calculate entailment with processed solutions
+                canonical_impl = extract_function_body(canonical_solution)
+                if canonical_impl:
+                    canonical_alignment = context_entails_response(
+                        canonical_impl, processed_solutions, entailment_model)
+                    reverse_alignment = context_entails_response(
+                        canonical_impl, processed_solutions, entailment_model)
+                else:
+                    logging.warning("Could not extract canonical implementation")
+                    canonical_alignment = 0.0
+                    reverse_alignment = 0.0
 
             pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
 
