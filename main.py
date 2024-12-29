@@ -359,12 +359,15 @@ def evaluate_model(
         )
 
         if generated_solutions:
-           logging.debug("Sample solution lengths: " + 
-                        str([len(sol) for sol in generated_solutions[:3]]) + "...")
-            
+            logging.debug(
+                "Sample solution lengths: "
+                + str([len(sol) for sol in generated_solutions[:3]])
+                + "..."
+            )
+
             semantic_ids = get_semantic_ids(generated_solutions, entailment_model)
             logging.info(f"Number of semantic clusters: {len(set(semantic_ids))}")
-            
+
             semantic_entropy = cluster_assignment_entropy(semantic_ids)
             logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
             
