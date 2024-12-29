@@ -1,6 +1,6 @@
 import numpy as np
 import logging
-
+import torch
 
 def context_entails_response(context, responses, model):
     """
@@ -21,6 +21,8 @@ def context_entails_response(context, responses, model):
             + 1.0 * probs["entailment"]  # Entailment gives full credit
         )
         all_scores.append(score)
+        torch.cuda.empty_cache()
+
         logging.debug(f"Response probabilities: {probs}")
         logging.debug(f"Computed score: {score:.3f}")
 
