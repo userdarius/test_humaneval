@@ -356,17 +356,21 @@ def evaluate_model(
 
                                 # Handle potential numerical instabilities
                                 if not np.isfinite(log_prob_step):
-                                    log_prob_step = -100.0  # Less extreme default value
+                                    log_prob_step = -20.0  # Less extreme default value
 
                                 log_prob += log_prob_step
                                 sequence_length += 1
 
-                        # Normalize by sequence length
+                        # Normalize by sequence length and scale to reasonable range
                         if sequence_length > 0:
                             log_prob = log_prob / sequence_length
+                            # Scale the log probabilities to a more reasonable range
+                            log_prob = (
+                                log_prob / 5.0
+                            )  # Divide by scaling factor to reduce magnitude
 
-                        # Clip to reasonable range
-                        log_prob = np.clip(log_prob, -100.0, 0.0)
+                        # Clip to more reasonable range: -20 to 0
+                        log_prob = np.clip(log_prob, -20.0, 0.0)
                 else:
                     log_prob = 0.0
 
