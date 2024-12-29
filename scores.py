@@ -39,25 +39,34 @@ def get_semantic_ids(strings_list, model, strict_entailment=False, example=None)
 
     def are_equivalent(text1, text2):
         try:
-            implication_1 = model.check_implication(text1, text2, example=example)
-            implication_2 = model.check_implication(text2, text1, example=example)
+            # Get probabilities for bidirectional entailment
+            probs_1_to_2 = model.check_implication(text1, text2, example=example)
+            probs_2_to_1 = model.check_implication(text2, text1, example=example)
 
             logging.debug(
-                f"Bidirectional implications: {implication_1} -> {implication_2}"
+                f"Bidirectional probabilities: {probs_1_to_2} -> {probs_2_to_1}"
             )
 
-            if not ((implication_1 in [0, 1, 2]) and (implication_2 in [0, 1, 2])):
-                logging.warning(
-                    f"Invalid implication scores: {implication_1}, {implication_2}"
-                )
-                return False
+            # Set thresholds for equivalence
+            entailment_threshold = 0.7  # Minimum entailment probability
+            contradiction_threshold = 0.3  # Maximum contradiction probability
 
-            result = False
             if strict_entailment:
-                result = (implication_1 == 2) and (implication_2 == 2)
+                # Strict equivalence: both directions must have high entailment
+                result = (
+                    probs_1_to_2["entailment"] > entailment_threshold
+                    and probs_2_to_1["entailment"] > entailment_threshold
+                )
             else:
-                implications = [implication_1, implication_2]
-                result = (0 not in implications) and ([1, 1] != implications)
+                # Relaxed equivalence: no contradiction and reasonable entailment
+                result = (
+                    probs_1_to_2["contradiction"] < contradiction_threshold
+                    and probs_2_to_1["contradiction"] < contradiction_threshold
+                    and (
+                        probs_1_to_2["entailment"] > entailment_threshold
+                        or probs_2_to_1["entailment"] > entailment_threshold
+                    )
+                )
 
             logging.debug(f"Equivalence result: {result}")
             return result
@@ -86,6 +95,7 @@ def get_semantic_ids(strings_list, model, strict_entailment=False, example=None)
     logging.info(f"Final semantic ID distribution: {id_counts}")
 
     return semantic_set_ids
+
 
 
 def logsumexp_by_id(semantic_ids, log_likelihoods, agg="sum_normalized"):
