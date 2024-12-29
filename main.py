@@ -292,12 +292,34 @@ def evaluate_model(
                     attention_mask = attention_mask.to(device)
 
                 # Focused beam search for more consistent solutions
+                # outputs = model.generate(
+                #     input_ids,
+                #     attention_mask=attention_mask,
+                #     max_new_tokens=1024,
+                #     do_sample=False,  # Disable sampling
+                #     num_beams=5,  # Pure beam search
+                #     output_scores=True,
+                #     return_dict_in_generate=True,
+                #     pad_token_id=tokenizer.eos_token_id,
+                #     repetition_penalty=1.3,
+                #     length_penalty=0.8,
+                #     no_repeat_ngram_size=3,
+                #     early_stopping=False,
+                #     return_legacy_cache=False,
+                # )
+
+                # Sampling for more diverse solutions
                 outputs = model.generate(
                     input_ids,
                     attention_mask=attention_mask,
                     max_new_tokens=1024,
-                    do_sample=False,  # Disable sampling
-                    num_beams=5,  # Pure beam search
+                    do_sample=True,  # Enable sampling
+                    temperature=0.8,  # Controls randomness (higher = more random)
+                    top_p=0.95,  # Nucleus sampling
+                    top_k=50,  # Top-k sampling
+                    num_beams=3,  # Can still use some beam search for quality
+                    num_beam_groups=3,  # Use diverse beam search
+                    diversity_penalty=0.5,  # Encourage diversity between beam groups
                     output_scores=True,
                     return_dict_in_generate=True,
                     pad_token_id=tokenizer.eos_token_id,
@@ -308,65 +330,46 @@ def evaluate_model(
                     return_legacy_cache=False,
                 )
 
-                # Sampling for more diverse solutions
-                # outputs = model.generate(
-                #     input_ids,
-                #     attention_mask=attention_mask,
-                #     max_new_tokens=1024,
-                #     do_sample=True,
-                #     temperature=0.6,  # Lower for more focused outputs
-                #     top_p=0.95,  # Higher to maintain valid syntax
-                #     num_beams=1,  # Remove beam search when sampling
-                #     top_k=50,  # Add top-k filtering
-                #     output_scores=True,
-                #     return_dict_in_generate=True,
-                #     pad_token_id=tokenizer.eos_token_id,
-                #     repetition_penalty=1.5,  # Higher to prevent duplicated code
-                #     length_penalty=0.8,  # Prefer shorter solutions
-                #     min_length=0,  # Remove minimum length constraint
-                #     no_repeat_ngram_size=3,  # Increase to prevent longer duplications
-                #     early_stopping=False,
-                #     return_legacy_cache=False,
-                # )
-
                 # Calculate sequence log probability
                 if hasattr(outputs, "scores") and outputs.scores:
                     scores = outputs.scores
                     generated_ids = outputs.sequences[0]
                     log_prob = 0
                     sequence_length = 0
-                    
+
                     # Get indices of non-padding tokens
-                    non_pad_indices = (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
+                    non_pad_indices = (
+                        (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
+                    )
                     if len(non_pad_indices) > 0:
                         start_idx = non_pad_indices[0].item()
-                        
+
                         for step, score in enumerate(scores):
                             if isinstance(score, tuple):
                                 score = score[0]
                             step_log_probs = torch.log_softmax(score, dim=-1)
-                            
+
                             # Only include if we're past the prompt
                             if step + start_idx + 1 < len(generated_ids):
                                 token = generated_ids[step + start_idx + 1]
-                                
+
                                 # Skip padding tokens
                                 if token == tokenizer.pad_token_id:
                                     continue
-                                    
+
                                 log_prob_step = step_log_probs[0, token].item()
-                                
+
                                 # Handle potential numerical instabilities
                                 if not np.isfinite(log_prob_step):
                                     log_prob_step = -100.0  # Less extreme default value
-                                
+
                                 log_prob += log_prob_step
                                 sequence_length += 1
 
                         # Normalize by sequence length
                         if sequence_length > 0:
                             log_prob = log_prob / sequence_length
-                            
+
                         # Clip to reasonable range
                         log_prob = np.clip(log_prob, -100.0, 0.0)
                 else:
