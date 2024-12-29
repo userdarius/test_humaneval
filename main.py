@@ -1,7 +1,6 @@
 import torch
 from data import get_dataset
 from model import load_model_and_tokenizer
-import logging
 from tqdm import tqdm
 import ast
 import inspect
@@ -24,6 +23,8 @@ from scores import (
     predictive_entropy_rao,
     context_entails_response,
 )
+import logging
+
 
 logging.basicConfig(level=logging.INFO)
 
@@ -83,52 +84,85 @@ class ErrorTracker:
         return asdict(self.total_errors)
 
 
-def extract_function_body(code_string):
-    """Extract just the function body focusing on the actual implementation."""
+def extract_function_body(code_string: str) -> Optional[str]:
+    """
+    Extract just the function body focusing on the actual implementation.
+    Handles both docstrings and implementation code more robustly.
+    """
     try:
-        # Log the input
-        logging.debug(f"Input code:\n{code_string}")
+        # First try AST parsing for clean code
+        try:
+            tree = ast.parse(code_string)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    # Get the function body lines
+                    lines = code_string.split("\n")
+                    # Skip function definition line
+                    body_lines = lines[node.body[0].lineno - 1 : node.end_lineno]
+                    # Remove docstring if present
+                    if isinstance(node.body[0], ast.Expr) and isinstance(
+                        node.body[0].value, ast.Str
+                    ):
+                        body_lines = body_lines[
+                            node.body[1].lineno - node.body[0].lineno :
+                        ]
+                    return "\n".join(body_lines).strip()
+        except (SyntaxError, AttributeError):
+            pass
 
-        # First pass: try to find the actual implementation
+        # Fallback: Manual parsing
         lines = code_string.split("\n")
         content_lines = []
-        in_implementation = False
+        in_docstring = False
+        implementation_started = False
+        docstring_delim = 0
 
         for line in lines:
             stripped = line.strip()
 
-            # Skip empty lines and common non-implementation lines
-            if not stripped or stripped.startswith(
-                ('"""', "'''", "#", "@", "def ", "class ", "if __name__")
-            ):
+            # Handle docstring boundaries
+            if '"""' in line or "'''" in line:
+                docstring_delim += line.count('"""') + line.count("'''")
+                in_docstring = docstring_delim % 2 != 0
                 continue
 
-            # Skip docstring blocks
-            if stripped.count('"""') % 2 == 1 or stripped.count("'''") % 2 == 1:
-                in_implementation = not in_implementation
+            # Skip if we're in a docstring
+            if in_docstring:
                 continue
 
-            if in_implementation:
+            # Skip function definition and empty lines
+            if stripped.startswith("def ") or not stripped:
+                continue
+
+            # Skip comment lines and doctest examples
+            if stripped.startswith("#") or ">>>" in line:
+                continue
+
+            # Skip common non-implementation markers
+            if stripped.startswith(("@", "class ", "if __name__")):
                 continue
 
             # This is likely implementation code
-            content_lines.append(stripped)
+            if not implementation_started:
+                if stripped and line[0].isspace():  # Check for indentation
+                    implementation_started = True
+
+            if implementation_started:
+                if not line[0].isspace():  # End of function
+                    break
+                content_lines.append(line)
 
         if not content_lines:
-            logging.warning("No implementation content found")
-            return ""
+            return None
 
-        # Join content and normalize basic formatting
+        # Join implementation lines
         implementation = "\n".join(content_lines)
 
-        # Log what we found
-        logging.debug(f"Extracted implementation:\n{implementation}")
-
-        return implementation
+        return implementation.strip()
 
     except Exception as e:
         logging.error(f"Error in function body extraction: {e}")
-        return ""
+        return None
 
 
 @timeout_decorator.timeout(5)  # 5 second timeout for execution
@@ -387,7 +421,7 @@ def evaluate_model(
                 logging.info(f"Generated solution: {implementation}")
                 if implementation:
                     processed_solutions.append(implementation)
-                    
+
             if processed_solutions:
                 logging.info(
                     f"Successfully extracted {len(processed_solutions)} implementations"
@@ -402,14 +436,15 @@ def evaluate_model(
                 canonical_impl = extract_function_body(canonical_solution)
                 if canonical_impl:
                     canonical_alignment = context_entails_response(
-                        canonical_impl, processed_solutions, entailment_model)
+                        canonical_impl, processed_solutions, entailment_model
+                    )
                     reverse_alignment = context_entails_response(
-                        canonical_impl, processed_solutions, entailment_model)
+                        canonical_impl, processed_solutions, entailment_model
+                    )
                 else:
                     logging.warning("Could not extract canonical implementation")
                     canonical_alignment = 0.0
                     reverse_alignment = 0.0
-
 
             if generated_bodies:
                 canonical_alignment = context_entails_response(
