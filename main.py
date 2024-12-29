@@ -187,6 +187,67 @@ def execute_test_case(func_obj, test_case, test_env):
         return False
 
 
+def calculate_sequence_log_prob(outputs, generated_ids, tokenizer):
+    """
+    Calculate normalized log probability for a generated sequence.
+
+    Args:
+        outputs: Model generation outputs containing scores
+        generated_ids: Generated token IDs
+        tokenizer: Tokenizer for handling special tokens
+
+    Returns:
+        float: Normalized log probability of the sequence
+    """
+    if not hasattr(outputs, "scores") or not outputs.scores:
+        return 0.0
+
+    scores = outputs.scores
+    log_prob = 0.0
+    sequence_length = 0
+
+    # Get indices of non-padding tokens
+    non_pad_indices = (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
+    if len(non_pad_indices) == 0:
+        return 0.0
+
+    # Only consider tokens after the prompt (input)
+    start_idx = non_pad_indices[0].item()
+
+    for step, score in enumerate(scores):
+        if isinstance(score, tuple):
+            score = score[0]
+
+        # Get log probabilities for current step
+        step_log_probs = torch.log_softmax(score, dim=-1)
+
+        # Only include if we're past the prompt
+        if step + start_idx + 1 < len(generated_ids):
+            token = generated_ids[step + start_idx + 1]
+
+            # Skip padding tokens
+            if token == tokenizer.pad_token_id:
+                continue
+
+            log_prob_step = step_log_probs[0, token].item()
+
+            # Handle potential numerical instabilities
+            if not np.isfinite(log_prob_step):
+                log_prob_step = -100.0  # Less extreme default value
+
+            log_prob += log_prob_step
+            sequence_length += 1
+
+    # Normalize by sequence length to get per-token log probability
+    if sequence_length > 0:
+        normalized_log_prob = log_prob / sequence_length
+    else:
+        normalized_log_prob = 0.0
+
+    # Clip to reasonable range
+    return np.clip(normalized_log_prob, -100.0, 0.0)
+
+
 def evaluate_model(
     model, tokenizer, dataset, num_problems, n_samples, k, entailment_model
 ):
@@ -273,16 +334,41 @@ def evaluate_model(
                     scores = outputs.scores
                     generated_ids = outputs.sequences[0]
                     log_prob = 0
-                    for step, score in enumerate(scores):
-                        if isinstance(score, tuple):
-                            score = score[0]
-                        step_log_probs = torch.log_softmax(score, dim=-1)
-                        if step < len(generated_ids) - 1:
-                            token = generated_ids[step + 1]
-                            log_prob_step = step_log_probs[0, token].item()
-                            if not np.isfinite(log_prob_step):
-                                log_prob_step = -1e3
-                            log_prob += log_prob_step
+                    sequence_length = 0
+                    
+                    # Get indices of non-padding tokens
+                    non_pad_indices = (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
+                    if len(non_pad_indices) > 0:
+                        start_idx = non_pad_indices[0].item()
+                        
+                        for step, score in enumerate(scores):
+                            if isinstance(score, tuple):
+                                score = score[0]
+                            step_log_probs = torch.log_softmax(score, dim=-1)
+                            
+                            # Only include if we're past the prompt
+                            if step + start_idx + 1 < len(generated_ids):
+                                token = generated_ids[step + start_idx + 1]
+                                
+                                # Skip padding tokens
+                                if token == tokenizer.pad_token_id:
+                                    continue
+                                    
+                                log_prob_step = step_log_probs[0, token].item()
+                                
+                                # Handle potential numerical instabilities
+                                if not np.isfinite(log_prob_step):
+                                    log_prob_step = -100.0  # Less extreme default value
+                                
+                                log_prob += log_prob_step
+                                sequence_length += 1
+
+                        # Normalize by sequence length
+                        if sequence_length > 0:
+                            log_prob = log_prob / sequence_length
+                            
+                        # Clip to reasonable range
+                        log_prob = np.clip(log_prob, -100.0, 0.0)
                 else:
                     log_prob = 0.0
 
