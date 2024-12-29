@@ -401,6 +401,7 @@ def evaluate_model(
                 + "..."
             )
 
+            # Calculate entropy metrics based on raw solutions first
             semantic_ids = get_semantic_ids(generated_solutions, entailment_model)
             logging.info(f"Number of semantic clusters: {len(set(semantic_ids))}")
 
@@ -413,9 +414,10 @@ def evaluate_model(
             pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
             logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
 
-            logging.info(f"Canonical solution : {canonical_solution}")
-            generated_bodies = []
+            # Process generated solutions to extract function bodies
+            logging.info(f"Canonical solution: {canonical_solution}")
             processed_solutions = []
+
             for sol in generated_solutions:
                 implementation = extract_function_body(sol)
                 logging.info(f"Generated solution: {implementation}")
@@ -429,35 +431,44 @@ def evaluate_model(
                 logging.debug(
                     f"Extracted implementations: {processed_solutions[:3]}..."
                 )
-                # Get semantic clusters using processed solutions
-                semantic_ids = get_semantic_ids(processed_solutions, entailment_model)
 
-                # Calculate entailment with processed solutions
-                if canonical_solution:
-                    canonical_alignment = context_entails_response(
-                        canonical_solution, processed_solutions, entailment_model
+                # Calculate entailment for each solution individually
+                canonical_alignments = []
+                reverse_alignments = []
+
+                for solution in processed_solutions:
+                    # Measure if canonical solution entails the generated solution
+                    canon_align = context_entails_response(
+                        canonical_solution, [solution], entailment_model
                     )
-                    reverse_alignment = context_entails_response(
-                        canonical_solution, processed_solutions, entailment_model
+                    canonical_alignments.append(canon_align)
+
+                    # Measure if generated solution entails the canonical solution
+                    rev_align = context_entails_response(
+                        solution, [canonical_solution], entailment_model
                     )
-                else:
-                    logging.warning("Could not extract canonical implementation")
-                    canonical_alignment = 0.0
-                    reverse_alignment = 0.0
+                    reverse_alignments.append(rev_align)
 
-            if generated_bodies:
-                canonical_alignment = context_entails_response(
-                    canonical_solution, generated_bodies, entailment_model
+                    logging.debug(
+                        f"Solution alignment scores - canonical: {canon_align:.3f}, reverse: {rev_align:.3f}"
+                    )
+
+                # Calculate average alignments
+                canonical_alignment = sum(canonical_alignments) / len(
+                    canonical_alignments
                 )
-                logging.info(f"Canonical alignment score: {canonical_alignment:.3f}")
-
-                reverse_alignment = context_entails_response(
-                    canonical_solution, generated_bodies, entailment_model
-                )
-                logging.info(f"Reverse alignment score: {reverse_alignment:.3f}")
-
+                reverse_alignment = sum(reverse_alignments) / len(reverse_alignments)
                 bidirectional = (canonical_alignment + reverse_alignment) / 2
-                logging.info(f"Bidirectional alignment score: {bidirectional:.3f}")
+
+                logging.info(
+                    f"Average canonical alignment score: {canonical_alignment:.3f}"
+                )
+                logging.info(
+                    f"Average reverse alignment score: {reverse_alignment:.3f}"
+                )
+                logging.info(
+                    f"Average bidirectional alignment score: {bidirectional:.3f}"
+                )
             else:
                 logging.warning(
                     "No valid function bodies extracted for alignment calculation"
@@ -465,12 +476,14 @@ def evaluate_model(
                 canonical_alignment = 0.0
                 reverse_alignment = 0.0
 
+            # Store all metrics
             semantic_metrics = {
                 "semantic_entropy": semantic_entropy,
                 "predictive_entropy": pred_entropy,
                 "predictive_entropy_rao": pred_entropy_rao,
                 "num_semantic_clusters": len(set(semantic_ids)),
                 "num_solutions": len(generated_solutions),
+                "num_processed_solutions": len(processed_solutions),
                 "canonical_alignment": canonical_alignment,
                 "reverse_alignment": reverse_alignment,
                 "bidirectional_alignment": (canonical_alignment + reverse_alignment)
