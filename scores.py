@@ -104,40 +104,49 @@ def logsumexp_by_id(semantic_ids, log_likelihoods, agg="sum_normalized"):
 
 
 def predictive_entropy(log_probs):
-    logging.info("\nCalculating predictive entropy")
+    """Compute MC estimate of entropy with improved numerical stability."""
     if len(log_probs) == 0:
-        logging.warning("Empty log probabilities provided")
         return 0.0
 
-    logging.debug(f"Log probabilities: {log_probs}")
+    # Convert log probabilities to probabilities with numerical stability
+    max_log_prob = np.max(log_probs)
+    log_probs_shifted = log_probs - max_log_prob
+    probs = np.exp(log_probs_shifted)
+    probs = probs / (np.sum(probs) + 1e-10)  # Add epsilon to avoid division by zero
 
+    # Calculate entropy using probabilities
+    entropy = -np.sum(probs * log_probs_shifted)
+
+    # Add small epsilon to handle edge cases
     eps = 1e-10
-    entropy = -np.sum(log_probs) / (len(log_probs) + eps)
+    entropy = entropy + eps
 
-    clipped_entropy = np.clip(entropy, -1e6, 1e6)
-    if clipped_entropy != entropy:
-        logging.warning(f"Entropy clipped from {entropy} to {clipped_entropy}")
-
-    logging.info(f"Final predictive entropy: {clipped_entropy:.3f}")
-    return clipped_entropy
+    return np.clip(entropy, 0, 1e3)
 
 
 def predictive_entropy_rao(log_probs):
-    """Compute Rao's quadratic entropy with numerical stability."""
+    """Compute Rao's quadratic entropy with improved numerical stability."""
     if len(log_probs) == 0:
         return 0.0
 
-    # Normalize log probabilities for numerical stability
+    # Normalize log probabilities with numerical stability
     max_log_prob = np.max(log_probs)
     log_probs_shifted = log_probs - max_log_prob
-
-    # Convert to probabilities with numerical stability
     probs = np.exp(log_probs_shifted)
-    probs = probs / (np.sum(probs) + 1e-10)
+    probs = probs / (np.sum(probs) + 1e-10)  # Add epsilon to avoid division by zero
 
-    # Calculate entropy
-    entropy = -np.sum(probs * log_probs)
-    return np.clip(entropy, -1e6, 1e6)
+    # Calculate Rao's entropy with protection against nan/inf
+    entropy = 0.0
+    eps = 1e-10
+
+    for i, p_i in enumerate(probs):
+        for j, p_j in enumerate(probs):
+            if i != j:
+                d_ij = abs(log_probs[i] - log_probs[j])  # Distance measure
+                entropy += p_i * p_j * d_ij
+
+    entropy = entropy / 2.0 + eps  # Add small epsilon for stability
+    return np.clip(entropy, 0, 1e3)
 
 
 def cluster_assignment_entropy(semantic_ids):

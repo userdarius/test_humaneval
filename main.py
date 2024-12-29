@@ -223,14 +223,15 @@ def evaluate_model(
                     log_prob = 0
                     for step, score in enumerate(scores):
                         if isinstance(score, tuple):
-                            # Handle legacy format
                             score = score[0]
                         step_log_probs = torch.log_softmax(score, dim=-1)
-                        if (
-                            step < len(generated_ids) - 1
-                        ):  # Ensure we don't go out of bounds
+                        if step < len(generated_ids) - 1:
                             token = generated_ids[step + 1]
-                            log_prob += step_log_probs[0, token].item()
+                            log_prob_step = step_log_probs[0, token].item()
+                            # Add validation to catch invalid values
+                            if not np.isfinite(log_prob_step):
+                                log_prob_step = -1e3  # Use a reasonable default
+                            log_prob += log_prob_step
                 else:
                     # If scores are not available, use a default value
                     log_prob = 0.0
@@ -370,14 +371,18 @@ def evaluate_model(
 
             semantic_entropy = cluster_assignment_entropy(semantic_ids)
             logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
-            
+
             pred_entropy = predictive_entropy(solution_log_probs)
             logging.info(f"Predictive entropy: {pred_entropy:.3f}")
-            
+
             # Log alignment calculations
             canonical_body = extract_function_body(canonical_solution)
-            generated_bodies = [extract_function_body(sol) for sol in generated_solutions]
-            logging.info(f"Successfully extracted {len(generated_bodies)} function bodies")
+            generated_bodies = [
+                extract_function_body(sol) for sol in generated_solutions
+            ]
+            logging.info(
+                f"Successfully extracted {len(generated_bodies)} function bodies"
+            )
             pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
 
             # Clean and normalize both canonical and generated solutions
@@ -391,23 +396,26 @@ def evaluate_model(
                 except Exception as e:
                     logging.warning(f"Failed to extract function body: {e}")
                     continue
-            
+
             if generated_bodies:
                 canonical_alignment = context_entails_response(
-                    canonical_body, generated_bodies, entailment_model)
+                    canonical_body, generated_bodies, entailment_model
+                )
                 logging.info(f"Canonical alignment score: {canonical_alignment:.3f}")
-                
+
                 reverse_alignment = context_entails_response(
-                    canonical_body, generated_bodies, entailment_model)
+                    canonical_body, generated_bodies, entailment_model
+                )
                 logging.info(f"Reverse alignment score: {reverse_alignment:.3f}")
-                
+
                 bidirectional = (canonical_alignment + reverse_alignment) / 2
                 logging.info(f"Bidirectional alignment score: {bidirectional:.3f}")
             else:
-                logging.warning("No valid function bodies extracted for alignment calculation")
+                logging.warning(
+                    "No valid function bodies extracted for alignment calculation"
+                )
                 canonical_alignment = 0.0
                 reverse_alignment = 0.0
-                
 
             semantic_metrics = {
                 "semantic_entropy": semantic_entropy,
