@@ -313,7 +313,7 @@ def evaluate_model(
                     input_ids,
                     attention_mask=attention_mask,
                     max_new_tokens=1024,
-                    do_sample=True,  # Enable sampling
+                    do_sample=False,  # Enable sampling
                     temperature=0.8,  # Controls randomness (higher = more random)
                     top_p=0.95,  # Nucleus sampling
                     top_k=50,  # Top-k sampling
