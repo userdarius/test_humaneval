@@ -376,11 +376,16 @@ def evaluate_model(
             pred_entropy = predictive_entropy(solution_log_probs)
             logging.info(f"Predictive entropy: {pred_entropy:.3f}")
 
+            pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
+            logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
+
             canonical_body = extract_function_body(canonical_solution)
+            logging.info(f"Canonical solution : {canonical_body}")
             generated_bodies = []
             processed_solutions = []
             for sol in generated_solutions:
                 implementation = extract_function_body(sol)
+                logging.info(f"Generated solution: {implementation}")
                 if implementation:
                     processed_solutions.append(implementation)
                     
@@ -406,7 +411,6 @@ def evaluate_model(
                     canonical_alignment = 0.0
                     reverse_alignment = 0.0
 
-            pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
 
             if generated_bodies:
                 canonical_alignment = context_entails_response(
