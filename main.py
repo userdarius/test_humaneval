@@ -292,8 +292,8 @@ def evaluate_model(
                 attention_mask=attention_mask,
                 max_new_tokens=1024,
                 temperature=0.8,
-                top_p=0.95,  # Nucleus sampling
-                top_k=50,  # Top-k sampling
+                top_p=0.95,  
+                top_k=50,  
                 output_scores=True,
                 num_return_sequences=n_samples,
                 return_dict_in_generate=True,
@@ -744,7 +744,7 @@ def calculate_pass_at_k(n_samples: int, n_correct: int, k: int) -> float:
 
 def main():
     # Model parameters
-    model_name = "meta-llama/Llama-3.2-3B"  # need to add HF_TOKEN
+    model_name = "meta-llama/Llama-3.1-70B"  # need to add HF_TOKEN
 
     # Load dataset
     logging.info("Loading dataset...")
