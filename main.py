@@ -313,13 +313,10 @@ def evaluate_model(
                     input_ids,
                     attention_mask=attention_mask,
                     max_new_tokens=1024,
-                    do_sample=False,  # Enable sampling
                     temperature=0.8,  # Controls randomness (higher = more random)
                     top_p=0.95,  # Nucleus sampling
                     top_k=50,  # Top-k sampling
                     num_beams=3,  # Can still use some beam search for quality
-                    num_beam_groups=3,  # Use diverse beam search
-                    diversity_penalty=0.5,  # Encourage diversity between beam groups
                     output_scores=True,
                     return_dict_in_generate=True,
                     pad_token_id=tokenizer.eos_token_id,
