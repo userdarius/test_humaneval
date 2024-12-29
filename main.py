@@ -433,13 +433,12 @@ def evaluate_model(
                 semantic_ids = get_semantic_ids(processed_solutions, entailment_model)
 
                 # Calculate entailment with processed solutions
-                canonical_impl = extract_function_body(canonical_solution)
-                if canonical_impl:
+                if canonical_solution:
                     canonical_alignment = context_entails_response(
-                        canonical_impl, processed_solutions, entailment_model
+                        canonical_solution, processed_solutions, entailment_model
                     )
                     reverse_alignment = context_entails_response(
-                        canonical_impl, processed_solutions, entailment_model
+                        canonical_solution, processed_solutions, entailment_model
                     )
                 else:
                     logging.warning("Could not extract canonical implementation")
@@ -448,12 +447,12 @@ def evaluate_model(
 
             if generated_bodies:
                 canonical_alignment = context_entails_response(
-                    canonical_body, generated_bodies, entailment_model
+                    canonical_solution, generated_bodies, entailment_model
                 )
                 logging.info(f"Canonical alignment score: {canonical_alignment:.3f}")
 
                 reverse_alignment = context_entails_response(
-                    canonical_body, generated_bodies, entailment_model
+                    canonical_solution, generated_bodies, entailment_model
                 )
                 logging.info(f"Reverse alignment score: {reverse_alignment:.3f}")
 
