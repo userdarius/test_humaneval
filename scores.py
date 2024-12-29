@@ -3,6 +3,13 @@ import logging
 
 
 def context_entails_response(context, responses, model):
+    """
+    Check if context entails responses using the entailment model.
+    Returns a score between 0 and 1 where:
+    1.0 = perfect entailment (model returns 2)
+    0.5 = neutral (model returns 1)
+    0.0 = contradiction (model returns 0)
+    """
     logging.info(
         f"\nChecking entailment between context and {len(responses)} responses"
     )
@@ -16,7 +23,9 @@ def context_entails_response(context, responses, model):
 
     mean_vote = np.mean(votes)
     logging.info(f"Average implication score: {mean_vote:.3f}")
-    return np.clip(2 - mean_vote, 0, 1)
+
+    # Convert MNLI scores (0,1,2) to alignment scores (0,0.5,1)
+    return mean_vote / 2.0
 
 
 def get_semantic_ids(strings_list, model, strict_entailment=False, example=None):
