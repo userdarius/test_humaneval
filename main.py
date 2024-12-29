@@ -313,11 +313,12 @@ def evaluate_model(
                     input_ids,
                     attention_mask=attention_mask,
                     max_new_tokens=1024,
-                    temperature=0.8,  # Controls randomness (higher = more random)
+                    temperature=0.8,
                     top_p=0.95,  # Nucleus sampling
                     top_k=50,  # Top-k sampling
                     num_beams=3,  # Can still use some beam search for quality
                     output_scores=True,
+                    num_return_sequences=n_samples,
                     return_dict_in_generate=True,
                     pad_token_id=tokenizer.eos_token_id,
                     no_repeat_ngram_size=3,
@@ -328,51 +329,58 @@ def evaluate_model(
                 # Calculate sequence log probability
                 if hasattr(outputs, "scores") and outputs.scores:
                     scores = outputs.scores
-                    generated_ids = outputs.sequences[0]
-                    log_prob = 0
-                    sequence_length = 0
+                    # For each sequence in the batch
+                    for batch_idx in range(len(outputs.sequences)):
+                        generated_ids = outputs.sequences[batch_idx]
+                        log_prob = 0
+                        sequence_length = 0
 
-                    # Get indices of non-padding tokens
-                    non_pad_indices = (
-                        (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
-                    )
-                    if len(non_pad_indices) > 0:
-                        start_idx = non_pad_indices[0].item()
+                        # Get indices of non-padding tokens
+                        non_pad_indices = (
+                            (generated_ids != tokenizer.pad_token_id)
+                            .nonzero()
+                            .squeeze(-1)
+                        )
+                        if len(non_pad_indices) > 0:
+                            start_idx = non_pad_indices[0].item()
 
-                        for step, score in enumerate(scores):
-                            if isinstance(score, tuple):
-                                score = score[0]
-                            step_log_probs = torch.log_softmax(score, dim=-1)
+                            for step, score in enumerate(scores):
+                                if isinstance(score, tuple):
+                                    score = score[0]
+                                step_log_probs = torch.log_softmax(score, dim=-1)
 
-                            # Only include if we're past the prompt
-                            if step + start_idx + 1 < len(generated_ids):
-                                token = generated_ids[step + start_idx + 1]
+                                # Only include if we're past the prompt
+                                if step + start_idx + 1 < len(generated_ids):
+                                    token = generated_ids[step + start_idx + 1]
 
-                                # Skip padding tokens
-                                if token == tokenizer.pad_token_id:
-                                    continue
+                                    # Skip padding tokens
+                                    if token == tokenizer.pad_token_id:
+                                        continue
 
-                                log_prob_step = step_log_probs[0, token].item()
+                                    # Get probability for this specific sequence's token
+                                    log_prob_step = step_log_probs[
+                                        batch_idx, token
+                                    ].item()
 
-                                # Handle potential numerical instabilities
-                                if not np.isfinite(log_prob_step):
-                                    log_prob_step = -20.0  # Less extreme default value
+                                    if not np.isfinite(log_prob_step):
+                                        log_prob_step = -20.0
 
-                                log_prob += log_prob_step
-                                sequence_length += 1
+                                    log_prob += log_prob_step
+                                    sequence_length += 1
 
-                        # Normalize by sequence length and scale to reasonable range
-                        if sequence_length > 0:
-                            log_prob = log_prob / sequence_length
-                            # Scale the log probabilities to a more reasonable range
-                            log_prob = (
-                                log_prob / 5.0
-                            )  # Divide by scaling factor to reduce magnitude
+                            if sequence_length > 0:
+                                log_prob = log_prob / sequence_length
+                                log_prob = log_prob / 5.0
 
-                        # Clip to more reasonable range: -20 to 0
-                        log_prob = np.clip(log_prob, -20.0, 0.0)
-                else:
-                    log_prob = 0.0
+                            log_prob = np.clip(log_prob, -20.0, 0.0)
+                        else:
+                            log_prob = 0.0
+
+                        response = tokenizer.decode(
+                            generated_ids, skip_special_tokens=True
+                        )
+                        generated_solutions.append(response)
+                        solution_log_probs.append(log_prob)
 
                 response = tokenizer.decode(generated_ids, skip_special_tokens=True)
                 logging.info(f"\nRaw generated code:\n{response}\n")
