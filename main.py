@@ -379,8 +379,7 @@ def evaluate_model(
             pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
             logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
 
-            canonical_body = extract_function_body(canonical_solution)
-            logging.info(f"Canonical solution : {canonical_body}")
+            logging.info(f"Canonical solution : {canonical_solution}")
             generated_bodies = []
             processed_solutions = []
             for sol in generated_solutions:
