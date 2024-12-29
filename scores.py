@@ -4,28 +4,29 @@ import logging
 
 def context_entails_response(context, responses, model):
     """
-    Check if context entails responses using the entailment model.
-    Returns a score between 0 and 1 where:
-    1.0 = perfect entailment (model returns 2)
-    0.5 = neutral (model returns 1)
-    0.0 = contradiction (model returns 0)
+    Returns a score between 0 and 1 representing how strongly the context entails the responses.
+    Uses full probability distribution from DeBERTa.
     """
     logging.info(
         f"\nChecking entailment between context and {len(responses)} responses"
     )
-    logging.debug(f"Context: {context[:100]}...")
 
-    votes = []
-    for i, response in enumerate(responses):
-        vote = model.check_implication(context, response)
-        votes.append(vote)
-        logging.debug(f"Response {i} implication score: {vote}")
+    all_scores = []
+    for response in responses:
+        probs = model.check_implication(context, response)
+        # Weight each class differently
+        score = (
+            0.0 * probs["contradiction"]  # Contradiction hurts score
+            + 0.5 * probs["neutral"]  # Neutral gives partial credit
+            + 1.0 * probs["entailment"]  # Entailment gives full credit
+        )
+        all_scores.append(score)
+        logging.debug(f"Response probabilities: {probs}")
+        logging.debug(f"Computed score: {score:.3f}")
 
-    mean_vote = np.mean(votes)
-    logging.info(f"Average implication score: {mean_vote:.3f}")
-
-    # Convert MNLI scores (0,1,2) to alignment scores (0,0.5,1)
-    return mean_vote / 2.0
+    final_score = np.mean(all_scores)
+    logging.info(f"Final alignment score: {final_score:.3f}")
+    return final_score
 
 
 def get_semantic_ids(strings_list, model, strict_entailment=False, example=None):
