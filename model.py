@@ -10,7 +10,7 @@ import logging
 import os
 import torch.nn.functional as F
 
-
+### Main model ###
 def load_model(model_name):
     try:
         model = AutoModelForCausalLM.from_pretrained(
@@ -41,14 +41,16 @@ def load_model_and_tokenizer(model_name):
     tokenizer = load_tokenizer(model_name)
     return model, tokenizer
 
+# TODO: Add a class for speculative sampling model and a class for a chain of thought model
+### Chain of Thought Model ###
 
 ### Entailment Model ###
+
 class BaseEntailment:
     """Base class for entailment models."""
 
     def save_prediction_cache(self):
         pass
-
 
 class EntailmentDeberta(BaseEntailment):
     """Entailment model using Deberta-v2-xlarge-mnli."""
@@ -70,3 +72,4 @@ class EntailmentDeberta(BaseEntailment):
             "neutral": probs[1].item(),
             "entailment": probs[2].item(),
         }
+

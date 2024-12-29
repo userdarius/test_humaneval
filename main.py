@@ -230,6 +230,7 @@ def evaluate_model(
                 if attention_mask is not None:
                     attention_mask = attention_mask.to(device)
 
+                # Focused beam search for more consistent solutions
                 outputs = model.generate(
                     input_ids,
                     attention_mask=attention_mask,
@@ -245,6 +246,27 @@ def evaluate_model(
                     early_stopping=False,
                     return_legacy_cache=False,
                 )
+
+                # Sampling for more diverse solutions
+                # outputs = model.generate(
+                #     input_ids,
+                #     attention_mask=attention_mask,
+                #     max_new_tokens=1024,
+                #     do_sample=True,
+                #     temperature=0.6,  # Lower for more focused outputs
+                #     top_p=0.95,  # Higher to maintain valid syntax
+                #     num_beams=1,  # Remove beam search when sampling
+                #     top_k=50,  # Add top-k filtering
+                #     output_scores=True,
+                #     return_dict_in_generate=True,
+                #     pad_token_id=tokenizer.eos_token_id,
+                #     repetition_penalty=1.5,  # Higher to prevent duplicated code
+                #     length_penalty=0.8,  # Prefer shorter solutions
+                #     min_length=0,  # Remove minimum length constraint
+                #     no_repeat_ngram_size=3,  # Increase to prevent longer duplications
+                #     early_stopping=False,
+                #     return_legacy_cache=False,
+                # )
 
                 # Calculate sequence log probability
                 if hasattr(outputs, "scores") and outputs.scores:
@@ -403,6 +425,8 @@ def evaluate_model(
 
             semantic_entropy = cluster_assignment_entropy(semantic_ids)
             logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
+
+            logging.info(f"Solution log probs: {solution_log_probs}")
 
             pred_entropy = predictive_entropy(solution_log_probs)
             logging.info(f"Predictive entropy: {pred_entropy:.3f}")
