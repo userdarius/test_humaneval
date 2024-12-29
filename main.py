@@ -166,9 +166,16 @@ def evaluate_model(
     device = next(model.parameters()).device
 
     for idx in tqdm(range(num_problems)):
+        logging.info(f"\n{'='*50}")
+        logging.info(f"Problem {idx}")
+
         item = dataset[idx]
         question = item["question"]
         canonical_solution = item["canonical_solution"]
+        logging.info(f"Question length: {len(question)}")
+        logging.debug(f"Question preview: {question[:200]}...")
+        logging.info(f"Canonical solution length: {len(canonical_solution)}")
+        logging.debug(f"Canonical solution preview: {canonical_solution[:200]}...")
         entry_point = item["entry_point"]
         test_code = item["test_code"]
         correct_samples = 0
@@ -347,15 +354,27 @@ def evaluate_model(
 
         # Calculate semantic metrics if we have solutions
         semantic_metrics = {}
+        logging.info(
+            f"\nCalculating semantic metrics for {len(generated_solutions)} solutions"
+        )
+
         if generated_solutions:
-            # Get semantic clusters
+           logging.debug("Sample solution lengths: " + 
+                        str([len(sol) for sol in generated_solutions[:3]]) + "...")
+            
             semantic_ids = get_semantic_ids(generated_solutions, entailment_model)
-
-            # Calculate semantic entropy
+            logging.info(f"Number of semantic clusters: {len(set(semantic_ids))}")
+            
             semantic_entropy = cluster_assignment_entropy(semantic_ids)
-
-            # Calculate predictive entropy metrics with protection against invalid values
+            logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
+            
             pred_entropy = predictive_entropy(solution_log_probs)
+            logging.info(f"Predictive entropy: {pred_entropy:.3f}")
+            
+            # Log alignment calculations
+            canonical_body = extract_function_body(canonical_solution)
+            generated_bodies = [extract_function_body(sol) for sol in generated_solutions]
+            logging.info(f"Successfully extracted {len(generated_bodies)} function bodies")
             pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
 
             # Clean and normalize both canonical and generated solutions
@@ -369,17 +388,23 @@ def evaluate_model(
                 except Exception as e:
                     logging.warning(f"Failed to extract function body: {e}")
                     continue
-
-            if generated_bodies:  # Only compute alignments if we have valid bodies
+            
+            if generated_bodies:
                 canonical_alignment = context_entails_response(
-                    canonical_body, generated_bodies, entailment_model
-                )
+                    canonical_body, generated_bodies, entailment_model)
+                logging.info(f"Canonical alignment score: {canonical_alignment:.3f}")
+                
                 reverse_alignment = context_entails_response(
-                    canonical_body, generated_bodies, entailment_model
-                )
+                    canonical_body, generated_bodies, entailment_model)
+                logging.info(f"Reverse alignment score: {reverse_alignment:.3f}")
+                
+                bidirectional = (canonical_alignment + reverse_alignment) / 2
+                logging.info(f"Bidirectional alignment score: {bidirectional:.3f}")
             else:
+                logging.warning("No valid function bodies extracted for alignment calculation")
                 canonical_alignment = 0.0
                 reverse_alignment = 0.0
+                
 
             semantic_metrics = {
                 "semantic_entropy": semantic_entropy,
