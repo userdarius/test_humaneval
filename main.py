@@ -320,8 +320,6 @@ def evaluate_model(
                     output_scores=True,
                     return_dict_in_generate=True,
                     pad_token_id=tokenizer.eos_token_id,
-                    repetition_penalty=1.3,
-                    length_penalty=0.8,
                     no_repeat_ngram_size=3,
                     early_stopping=False,
                     return_legacy_cache=False,
