@@ -336,17 +336,28 @@ def evaluate_model(
                                 # Get probability for this specific sequence's token
                                 log_prob_step = step_log_probs[batch_idx, token].item()
 
+                                # Weight important tokens more heavily
+                                if token in [
+                                    tokenizer.convert_tokens_to_ids(t)
+                                    for t in ["return", "while", "if", "for"]
+                                ]:
+                                    log_prob_step *= (
+                                        1.2  # Boost probability for structural tokens
+                                    )
+
                                 if not np.isfinite(log_prob_step):
-                                    log_prob_step = -20.0
+                                    log_prob_step = -10.0
 
                                 log_prob += log_prob_step
                                 sequence_length += 1
 
                         if sequence_length > 0:
                             log_prob = log_prob / sequence_length
-                            log_prob = log_prob / 5.0
+                            # Remove this scaling factor as it's reducing the differences
+                            # log_prob = log_prob / 5.0
 
-                        log_prob = np.clip(log_prob, -20.0, 0.0)
+                        # Use a wider range for clipping
+                        log_prob = np.clip(log_prob, -10.0, 0.0)
                     else:
                         log_prob = 0.0
 
