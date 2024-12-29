@@ -385,11 +385,15 @@ def evaluate_model(
                     processed_solutions.append(implementation)
                     
             if processed_solutions:
-                logging.info(f"Successfully extracted {len(processed_solutions)} implementations")
-                
+                logging.info(
+                    f"Successfully extracted {len(processed_solutions)} implementations"
+                )
+                logging.debug(
+                    f"Extracted implementations: {processed_solutions[:3]}..."
+                )
                 # Get semantic clusters using processed solutions
                 semantic_ids = get_semantic_ids(processed_solutions, entailment_model)
-                
+
                 # Calculate entailment with processed solutions
                 canonical_impl = extract_function_body(canonical_solution)
                 if canonical_impl:
