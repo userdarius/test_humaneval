@@ -1,7 +1,11 @@
 """Load HuggingFace models"""
 
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, AutoModelForSequenceClassification
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+)
 import logging
 import os
 import torch.nn.functional as F
@@ -63,10 +67,21 @@ class EntailmentDeberta(BaseEntailment):
         # check_implication('The weather is good and I like you', 'The weather is good') --> 2
         outputs = self.model(**inputs)
         logits = outputs.logits
+        probs = F.softmax(logits, dim=1)
+        scores = probs[0].cpu().tolist()
+        logging.info(f"\nDeberta Input:")
+        logging.info(f"Text1: '{text1}'")
+        logging.info(f"Text2: '{text2}'")
+        logging.info(f"Raw logits: {logits[0].cpu().tolist()}")
+        logging.info(
+            f"Class probabilities: contradiction={scores[0]:.3f}, neutral={scores[1]:.3f}, entailment={scores[2]:.3f}"
+        )
         # Deberta-mnli returns `neutral` and `entailment` classes at indices 1 and 2.
         largest_index = torch.argmax(
             F.softmax(logits, dim=1)
         )  # pylint: disable=no-member
+        logging.info(f"Predicted class: {largest_index}")
+
         prediction = largest_index.cpu().item()
         if os.environ.get("DEBERTA_FULL_LOG", False):
             logging.info("Deberta Input: %s -> %s", text1, text2)

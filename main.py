@@ -230,25 +230,21 @@ def evaluate_model(
                 if attention_mask is not None:
                     attention_mask = attention_mask.to(device)
 
-                with torch.no_grad():
-                    outputs = model.generate(
-                        input_ids,
-                        attention_mask=attention_mask,
-                        max_new_tokens=1024,
-                        do_sample=True,
-                        temperature=0.7,
-                        top_p=0.8,
-                        num_beams=5,
-                        output_scores=True,
-                        return_dict_in_generate=True,
-                        pad_token_id=tokenizer.eos_token_id,
-                        repetition_penalty=1.2,
-                        length_penalty=1.0,
-                        min_length=50,
-                        no_repeat_ngram_size=2,
-                        early_stopping=False,
-                        return_legacy_cache=False,
-                    )
+                outputs = model.generate(
+                    input_ids,
+                    attention_mask=attention_mask,
+                    max_new_tokens=1024,
+                    do_sample=False,  # Disable sampling
+                    num_beams=5,  # Pure beam search
+                    output_scores=True,
+                    return_dict_in_generate=True,
+                    pad_token_id=tokenizer.eos_token_id,
+                    repetition_penalty=1.3,
+                    length_penalty=0.8,
+                    no_repeat_ngram_size=3,
+                    early_stopping=False,
+                    return_legacy_cache=False,
+                )
 
                 # Calculate sequence log probability
                 if hasattr(outputs, "scores") and outputs.scores:
