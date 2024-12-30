@@ -15,7 +15,7 @@ def load_model(model_name):
     try:
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16,  # Use float16 for memory efficiency
+            torch_dtype=torch.float32,  # Use float16 for memory efficiency
             device_map="auto",  # Automatically handle device placement
         )
         return model

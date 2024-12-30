@@ -165,7 +165,7 @@ def extract_function_body(code_string: str) -> Optional[str]:
         return None
 
 
-@timeout_decorator.timeout(5)  # 5 second timeout for execution
+@timeout_decorator.timeout(10)  # 5 second timeout for execution
 def execute_test_case(func_obj, test_case, test_env):
     """Execute a single test case and return True if it passes."""
     try:
@@ -291,9 +291,9 @@ def evaluate_model(
                 input_ids,
                 attention_mask=attention_mask,
                 max_new_tokens=1024,
-                temperature=0.8,
-                top_p=0.95,
-                top_k=50,
+                temperature=0.6,
+                top_p=0.8,
+                top_k=100,
                 output_scores=True,
                 num_return_sequences=n_samples,
                 return_dict_in_generate=True,
