@@ -24,6 +24,7 @@ from scores import (
     context_entails_response,
 )
 import logging
+import gc
 
 
 logging.basicConfig(level=logging.INFO)
@@ -261,6 +262,8 @@ def evaluate_model(
     device = next(model.parameters()).device
 
     for idx in tqdm(range(num_problems)):
+        torch.cuda.empty_cache()
+        gc.collect()
         logging.info(f"\n{'='*50}")
         logging.info(f"Problem {idx}")
 
