@@ -260,7 +260,6 @@ def evaluate_model(
     results = []
     error_tracker = ErrorTracker()
 
-    device = next(model.parameters()).device
 
     for idx in tqdm(range(num_problems)):
         torch.cuda.empty_cache()
