@@ -25,6 +25,7 @@ from scores import (
 )
 import logging
 import gc
+from model import SpeculativeSamplingModel
 
 
 logging.basicConfig(level=logging.INFO)
@@ -293,18 +294,8 @@ def evaluate_model(
             # Sampling for more diverse solutions
             outputs = model.generate(
                 input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=1024,
                 temperature=0.6,
-                top_p=0.8,
-                top_k=100,
-                output_scores=True,
-                num_return_sequences=n_samples,
-                return_dict_in_generate=True,
-                pad_token_id=tokenizer.eos_token_id,
-                no_repeat_ngram_size=3,
-                early_stopping=False,
-                return_legacy_cache=False,
+                return_full=True
             )
 
             # Calculate sequence log probability
@@ -747,23 +738,26 @@ def calculate_pass_at_k(n_samples: int, n_correct: int, k: int) -> float:
 
 
 def main():
-    # Model parameters
-    model_name = "meta-llama/Llama-3.1-70B"  # need to add HF_TOKEN
-
+    # Model parameters - Using a smaller model for the approximation
+    target_model_name = "meta-llama/Llama-3.1-3B"
+    approx_model_name = "meta-llama/Llama-3.1-1b"  # Smaller model for draft
+    
     # Load dataset
     logging.info("Loading dataset...")
     dataset = get_dataset("openai_humaneval", seed=42)
 
-    # Load model and tokenizer
-    logging.info("Loading model and tokenizer...")
-    model, tokenizer = load_model_and_tokenizer(model_name)
+    # Initialize the speculative sampling model
+    logging.info("Initializing speculative sampling model...")
+    model = SpeculativeSamplingModel(
+        approx_model_name=approx_model_name,
+        target_model_name=target_model_name,
+        stop_sequences=None,
+    )
+    tokenizer = model.tokenizer  # Use the tokenizer from the model
 
     # Load entailment model
     logging.info("Loading entailment model...")
     entailment_model = EntailmentDeberta()
-
-    # No need to manually move model to device since we're using device_map="auto"
-    # The model will be automatically placed on available GPUs
 
     # Evaluate
     logging.info("Starting evaluation...")
@@ -794,7 +788,8 @@ def main():
 
     # Save results
     results = {
-        "model_name": model_name,
+        "target_model": target_model_name,
+        "approx_model": approx_model_name,
         "aggregate_metrics": aggregate_metrics,
         "timestamp": datetime.now().isoformat(),
         "num_samples": len(dataset),
