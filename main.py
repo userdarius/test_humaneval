@@ -739,8 +739,8 @@ def calculate_pass_at_k(n_samples: int, n_correct: int, k: int) -> float:
 
 def main():
     # Model parameters - Using a smaller model for the approximation
-    target_model_name = "meta-llama/Llama-3.1-3B"
-    approx_model_name = "meta-llama/Llama-3.1-1b"  # Smaller model for draft
+    target_model_name = "meta-llama/Llama-3.2-3B"
+    approx_model_name = "meta-llama/Llama-3.2-1b"  # Smaller model for draft
     
     # Load dataset
     logging.info("Loading dataset...")
