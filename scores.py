@@ -22,33 +22,49 @@ def context_entails_response(context, responses, model):
 
 def get_semantic_ids(strings_list, model, strict_entailment=False, example=None):
     logging.info(f"\nCalculating semantic IDs for {len(strings_list)} solutions")
+    logging.info(f"Strict entailment mode: {strict_entailment}")
 
     if not strings_list:
         logging.warning("Empty strings list provided to get_semantic_ids")
         return []
 
     def are_equivalent(text1, text2):
-        probs_1_to_2 = model.check_implication(text1, text2)
-        logging.info(f"Probs 1 to 2: {probs_1_to_2}")
-        probs_2_to_1 = model.check_implication(text2, text1)
-        logging.info(f"Probs 2 to 1: {probs_2_to_1}")
-        
-        # Stricter thresholds
-        entailment_threshold = 0.8
-        contradiction_threshold = 0.2
-        neutral_threshold = 0.5
-        
-        # Require bidirectional entailment and low contradiction
-        is_equivalent = (
-            probs_1_to_2["entailment"] > entailment_threshold
-            and probs_2_to_1["entailment"] > entailment_threshold
-            and probs_1_to_2["contradiction"] < contradiction_threshold
-            and probs_2_to_1["contradiction"] < contradiction_threshold
-            and probs_1_to_2["neutral"] < neutral_threshold
-            and probs_2_to_1["neutral"] < neutral_threshold
-        )
-        
-        return is_equivalent
+        try:
+            # Get probabilities for bidirectional entailment
+            probs_1_to_2 = model.check_implication(text1, text2, example=example)
+            probs_2_to_1 = model.check_implication(text2, text1, example=example)
+
+            logging.debug(
+                f"Bidirectional probabilities: {probs_1_to_2} -> {probs_2_to_1}"
+            )
+
+            # Set thresholds for equivalence
+            entailment_threshold = 0.7  # Minimum entailment probability
+            contradiction_threshold = 0.3  # Maximum contradiction probability
+
+            if strict_entailment:
+                # Strict equivalence: both directions must have high entailment
+                result = (
+                    probs_1_to_2["entailment"] > entailment_threshold
+                    and probs_2_to_1["entailment"] > entailment_threshold
+                )
+            else:
+                # Relaxed equivalence: no contradiction and reasonable entailment
+                result = (
+                    probs_1_to_2["contradiction"] < contradiction_threshold
+                    and probs_2_to_1["contradiction"] < contradiction_threshold
+                    and (
+                        probs_1_to_2["entailment"] > entailment_threshold
+                        or probs_2_to_1["entailment"] > entailment_threshold
+                    )
+                )
+
+            logging.debug(f"Equivalence result: {result}")
+            return result
+
+        except Exception as e:
+            logging.error(f"Error in semantic comparison: {e}")
+            return False
 
     semantic_set_ids = [-1] * len(strings_list)
     next_id = 0
