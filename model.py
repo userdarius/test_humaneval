@@ -50,7 +50,7 @@ def enhance_prompt_with_cot(question: str) -> str:
     while preserving the original function signature.
     """
     # Extract the function signature from the question
-    func_def = question[question.find("def") : question.find(":") + 1]
+    function_signature = question[question.find("def") : question.find(":") + 1]
     docstring = question[
         question.find('"""') : question.find('"""', question.find('"""') + 3) + 3
     ]
@@ -76,7 +76,7 @@ def enhance_prompt_with_cot(question: str) -> str:
 
     # Add the step-by-step template while preserving the original signature
     enhanced_prompt = cot_template.format(
-        question=question, function_signature=func_def, docstring=docstring
+        question=question, function_signature=function_signature, docstring=docstring
     )
 
     logging.info(f"Enhanced prompt: {enhanced_prompt}")
