@@ -88,22 +88,8 @@ def extract_function_body(code_string: str) -> Optional[str]:
     """
     Extract just the function body focusing on the actual implementation.
     Handles both docstrings and implementation code more robustly.
-    First checks for "4) Implementation:" marker.
     """
     try:
-        logging.info("Starting function body extraction")
-        # First check for implementation marker
-        implementation_marker = "4) Implementation:"
-        impl_start = code_string.find(implementation_marker)
-
-        if impl_start != -1:
-            # Use only the code after the implementation marker
-            logging.info(f"Implementation marker found at index {impl_start}")
-            code_string = code_string[impl_start + len(implementation_marker) :].strip()
-            logging.info(f"Code after marker: {code_string}")
-        else:
-            logging.info("No implementation marker found")
-
         # First try AST parsing for clean code
         try:
             tree = ast.parse(code_string)
@@ -126,7 +112,6 @@ def extract_function_body(code_string: str) -> Optional[str]:
 
         # Fallback: Manual parsing
         lines = code_string.split("\n")
-        logging.info(f"Lines: {lines}")
         content_lines = []
         in_docstring = False
         implementation_started = False
@@ -172,7 +157,7 @@ def extract_function_body(code_string: str) -> Optional[str]:
 
         # Join implementation lines
         implementation = "\n".join(content_lines)
-        logging.info(f"Implementation: {implementation}")
+
         return implementation.strip()
 
     except Exception as e:
@@ -324,6 +309,7 @@ def evaluate_model(
             if hasattr(outputs, "scores") and outputs.scores:
                 scores = outputs.scores
                 # For each sequence in the batch
+                # noqa: B007 
                 for batch_idx in range(len(outputs.sequences)):
                     error_tracker.increment_total(idx)
                     generated_ids = outputs.sequences[batch_idx]
@@ -380,12 +366,18 @@ def evaluate_model(
 
                     response = tokenizer.decode(generated_ids, skip_special_tokens=True)
                     logging.info(f"\nRaw generated code:\n{response}\n")
+
                     # Extract the code after the implementation marker
                     implementation_marker = "4) Implementation:"
                     impl_start = response.find(implementation_marker)
                     if impl_start != -1:
-                        response = response[impl_start + len(implementation_marker) :].strip()
+                        response = response[
+                            impl_start + len(implementation_marker) :
+                        ].strip()
                     logging.info(f"Response after marker: {response}")
+
+                    # remove anything after 
+                    response = response[: response.find("5) ")]
 
                     generated_solutions.append(response)
                     solution_log_probs.append(log_prob)
