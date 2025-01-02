@@ -197,11 +197,12 @@ class SpeculativeSamplingModel:
                 r = torch.rand(1)
 
                 logging.info("Accept/reject step")
-                logging.info("Target token probability: %s", target_token_prob)
-                logging.info("Approx token probability: %s", approx_token_prob)
+                
 
                 target_token_prob = target_prob[0, j]
                 approx_token_prob = draft_probs[i][0, j]
+                logging.info("Target token probability: %s", target_token_prob)
+                logging.info("Approx token probability: %s", approx_token_prob)
 
                 if r > target_token_prob / approx_token_prob:
                     break
