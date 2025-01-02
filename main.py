@@ -376,14 +376,13 @@ def evaluate_model(
                     logging.info(f"Response after marker: {response}")
 
                     # remove anything after 
-                    try:
-                        response = response[: response.find(" 5) ")]
-                    except ValueError:
-                        logging.info(f"No 5) found in response: {response}")
+                    if "5) " in response:
+                        response = response[: response.find("5) ")]
+                        logging.info(f"Response after removing 5): {response}")
+                    else:
                         response = response
 
-                    logging.info(f"Response after removing 5): {response}")
-
+                    logging.info(f"Final response: {response}")
                     generated_solutions.append(response)
                     solution_log_probs.append(log_prob)
 
