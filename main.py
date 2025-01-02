@@ -258,10 +258,10 @@ def evaluate_model(
 
                         if generated_code:
                             processed_solutions.append(generated_code)
-
+                            logging.info(f"Generated code after MAIN extraction: {generated_code}")
                             # Calculate log probabilities for the implementation tokens
                             implementation = extract_function_body(generated_code)
-                            logging.info(f"Implementation for log prob calculation: {implementation}")
+                            logging.info(f"Generated code after BODY extraction: {implementation}")
                             if implementation:
                                 log_prob = calculate_implementation_log_prob(
                                     implementation,
@@ -477,6 +477,9 @@ def calculate_implementation_log_prob(
     # Normalize implementation and find it in full response
     impl_lines = implementation.strip().splitlines()
     full_lines = full_response.strip().splitlines()
+
+    logging.info(f"Implementation lines: {impl_lines}")
+    logging.info(f"Full response lines: {full_lines}")
 
     # Find the implementation in the full response
     impl_start = -1
