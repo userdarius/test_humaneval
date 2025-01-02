@@ -91,6 +91,7 @@ def extract_function_body(code_string: str) -> Optional[str]:
     First checks for "4) Implementation:" marker.
     """
     try:
+        logging.info("Starting function body extraction")
         # First check for implementation marker
         implementation_marker = "4) Implementation:"
         impl_start = code_string.find(implementation_marker)
@@ -167,7 +168,7 @@ def extract_function_body(code_string: str) -> Optional[str]:
 
         # Join implementation lines
         implementation = "\n".join(content_lines)
-
+        logging.info(f"Implementation: {implementation}")
         return implementation.strip()
 
     except Exception as e:
