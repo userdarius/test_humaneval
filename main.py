@@ -267,6 +267,7 @@ def evaluate_model(
         logging.info(f"Problem {idx}")
 
         item = dataset[idx]
+        logging.info(f"Original question: {item['question']}")
         question = enhance_prompt_with_cot(item["question"])  # Enhance with CoT
         encoded_input = tokenizer(question, return_tensors="pt", truncation=True)
         input_ids = encoded_input["input_ids"].to(device)
