@@ -479,6 +479,11 @@ def calculate_implementation_log_prob(
     impl_tokens = tokenizer.encode(implementation, add_special_tokens=False)
     full_tokens = tokenizer.encode(full_response, add_special_tokens=False)
 
+    print("Implementation:", implementation)
+    print("Full response:", full_response)
+    print("Impl tokens:", impl_tokens)
+    print("Full tokens:", full_tokens)
+
     # Find implementation start in full sequence
     impl_start_idx = -1
     for i in range(len(full_tokens) - len(impl_tokens) + 1):
@@ -498,11 +503,19 @@ def calculate_implementation_log_prob(
                 score = score[0]
             step_log_probs = torch.log_softmax(score, dim=-1)
 
+            # Add debug prints
+            print(f"Step {step} score shape:", score.shape)
+            print(f"Step {step} logprobs shape:", step_log_probs.shape)
+            print(f"Step {step} max logprob:", step_log_probs.max().item())
+            print(f"Step {step} min logprob:", step_log_probs.min().item())
+
             token_idx = step + start_idx + 1
             if token_idx >= impl_start_idx and token_idx < impl_start_idx + len(
                 impl_tokens
             ):
                 token = generated_ids[token_idx]
+                print(f"Processing token {token} at position {token_idx}")
+                print(f"Token text:", tokenizer.decode([token]))
                 if token == tokenizer.pad_token_id:
                     continue
 
@@ -519,6 +532,9 @@ def calculate_implementation_log_prob(
 
                 log_prob += log_prob_step
                 sequence_length += 1
+                # Before returning
+                print(f"Total sequence length: {sequence_length}")
+                print(f"Total log prob before normalization: {log_prob}")
 
         if sequence_length > 0:
             log_prob = log_prob / sequence_length
@@ -690,8 +706,8 @@ def main():
         tokenizer,
         dataset,
         num_problems=1,
-        n_samples=10,
-        k=5,
+        n_samples=5,
+        k=2,
         entailment_model=entailment_model,
     )
 
