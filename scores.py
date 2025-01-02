@@ -22,7 +22,6 @@ def context_entails_response(context, responses, model):
 
 def get_semantic_ids(strings_list, model, strict_entailment=False, example=None):
     logging.info(f"\nCalculating semantic IDs for {len(strings_list)} solutions")
-    logging.info(f"Strict entailment mode: {strict_entailment}")
 
     if not strings_list:
         logging.warning("Empty strings list provided to get_semantic_ids")
@@ -30,7 +29,9 @@ def get_semantic_ids(strings_list, model, strict_entailment=False, example=None)
 
     def are_equivalent(text1, text2):
         probs_1_to_2 = model.check_implication(text1, text2)
+        logging.info(f"Probs 1 to 2: {probs_1_to_2}")
         probs_2_to_1 = model.check_implication(text2, text1)
+        logging.info(f"Probs 2 to 1: {probs_2_to_1}")
         
         # Stricter thresholds
         entailment_threshold = 0.8
@@ -165,12 +166,8 @@ def cluster_assignment_entropy(semantic_ids):
     counts = np.bincount(semantic_ids)
     probabilities = counts / n_generations
 
-    logging.debug(f"Cluster counts: {counts}")
-    logging.debug(f"Cluster probabilities: {probabilities}")
-
     if not np.isclose(probabilities.sum(), 1):
         logging.error(f"Probability sum error: {probabilities.sum()}")
 
     entropy = -(probabilities * np.log(probabilities)).sum()
-    logging.info(f"Final cluster assignment entropy: {entropy:.3f}")
     return entropy

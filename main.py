@@ -326,7 +326,9 @@ def evaluate_model(
                     if try_run_tests(response, entry_point, test_code, test_env):
                         correct_samples += 1
                         logging.info(f"\nRaw extracted code:\n{response}\n")
-                        logging.info("✓ Sample passed all tests on raw code after extraction")
+                        logging.info(
+                            "✓ Sample passed all tests on raw code after extraction"
+                        )
                         continue
 
                     # Extract function and try fixes
@@ -416,7 +418,6 @@ def evaluate_model(
                                     )
 
                         fixed_code = "\n".join(fixed_lines)
-                        logging.info(f"\nFinal fixed code:\n{fixed_code}\n")
 
                         # Update the stored solution with the fixed version
                         generated_solutions[-1] = fixed_code
@@ -452,45 +453,37 @@ def evaluate_model(
 
             for sol in generated_solutions:
                 implementation = extract_function_body(sol)
-                logging.info(f"Generated solution: {implementation}")
+                logging.info(f"Processed solution for semantic analysis: {implementation}")
                 if implementation:
                     processed_solutions.append(implementation)
+                else:
+                    logging.warning(f"No implementation found for solution: {sol}")
 
-            # Use the best available solutions for all metrics
-            solutions_for_metrics = processed_solutions if processed_solutions else generated_solutions
-            
-            logging.info(f"\nCalculating semantic metrics for {len(solutions_for_metrics)} solutions")
-            logging.debug(
-                "Sample solution lengths: "
-                + str([len(sol) for sol in solutions_for_metrics[:3]])
-                + "..."
+            logging.info(
+                f"\nCalculating semantic metrics for {len(processed_solutions)} solutions"
             )
 
             # Calculate entropy metrics using best available solutions
-            semantic_ids = get_semantic_ids(solutions_for_metrics, entailment_model)
+            semantic_ids = get_semantic_ids(processed_solutions, entailment_model)
             num_clusters = len(set(semantic_ids))
             logging.info(f"Number of semantic clusters: {num_clusters}")
 
             semantic_entropy = cluster_assignment_entropy(semantic_ids)
             logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
 
-            logging.info(f"Solution log probs: {solution_log_probs}")
-            pred_entropy = predictive_entropy(solution_log_probs)
-            pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
-            logging.info(f"Predictive entropy: {pred_entropy:.3f}")
-            logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
-
-            if solutions_for_metrics:
+            if processed_solutions:
                 # clear cache
                 torch.cuda.empty_cache()
                 gc.collect()
-                logging.info(f"Calculating alignments for {len(solutions_for_metrics)} solutions")
+                logging.info(
+                    f"Calculating alignments for {len(processed_solutions)} solutions"
+                )
 
                 # Calculate entailment for each solution individually
                 canonical_alignments = []
                 reverse_alignments = []
 
-                for solution in solutions_for_metrics:
+                for solution in processed_solutions:
                     # Measure if canonical solution entails the generated solution
                     canon_align = context_entails_response(
                         canonical_solution, [solution], entailment_model
@@ -508,18 +501,34 @@ def evaluate_model(
                     )
 
                 # Calculate average alignments
-                canonical_alignment = sum(canonical_alignments) / len(canonical_alignments)
+                canonical_alignment = sum(canonical_alignments) / len(
+                    canonical_alignments
+                )
                 reverse_alignment = sum(reverse_alignments) / len(reverse_alignments)
                 bidirectional = (canonical_alignment + reverse_alignment) / 2
 
-                logging.info(f"Average canonical alignment score: {canonical_alignment:.3f}")
-                logging.info(f"Average reverse alignment score: {reverse_alignment:.3f}")
-                logging.info(f"Average bidirectional alignment score: {bidirectional:.3f}")
+                logging.info(
+                    f"Average canonical alignment score: {canonical_alignment:.3f}"
+                )
+                logging.info(
+                    f"Average reverse alignment score: {reverse_alignment:.3f}"
+                )
+                logging.info(
+                    f"Average bidirectional alignment score: {bidirectional:.3f}"
+                )
             else:
-                logging.warning("No valid solutions available for alignment calculation")
+                logging.warning(
+                    "No valid solutions available for alignment calculation"
+                )
                 canonical_alignment = 0.0
                 reverse_alignment = 0.0
                 bidirectional = 0.0
+
+            logging.info(f"Solution log probs: {solution_log_probs}")
+            pred_entropy = predictive_entropy(solution_log_probs)
+            pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
+            logging.info(f"Predictive entropy: {pred_entropy:.3f}")
+            logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
 
             # Store all metrics
             semantic_metrics = {
