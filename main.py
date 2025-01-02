@@ -193,7 +193,6 @@ def evaluate_model(
 ):
     """
     Evaluate the model on the dataset with error tracking and semantic uncertainty metrics.
-    Now computes metrics for all generated solutions, regardless of test passage.
     """
     results = []
     error_tracker = ErrorTracker()
@@ -246,7 +245,6 @@ def evaluate_model(
                     error_tracker.increment_total(idx)
                     generated_ids = outputs.sequences[batch_idx]
                     response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-                    logging.info(f"\nRaw generated code:\n{response}\n")
                     raw_solutions.append(response)
 
                     # Extract and fix the function
@@ -259,11 +257,11 @@ def evaluate_model(
                         )
 
                         if generated_code:
-                            logging.info(f"\nFixed function:\n{generated_code}\n")
                             processed_solutions.append(generated_code)
 
                             # Calculate log probabilities for the implementation tokens
                             implementation = extract_function_body(generated_code)
+                            logging.info(f"Implementation for log prob calculation: {implementation}")
                             if implementation:
                                 log_prob = calculate_implementation_log_prob(
                                     implementation,
