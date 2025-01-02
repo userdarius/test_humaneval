@@ -46,26 +46,45 @@ def load_model_and_tokenizer(model_name):
 ### Chain of Thought Model ###
 def enhance_prompt_with_cot(question: str) -> str:
     """
-    Enhance a coding question with Chain of Thought prompting to encourage step-by-step thinking.
+    Enhance a coding question with Chain of Thought prompting to encourage step-by-step thinking
+    while preserving the original function signature.
     """
-    cot_template = """Let's solve this coding problem step by step:
+    # Extract the function signature from the question
+    func_def = question[question.find("def") : question.find(":") + 1]
+    docstring = question[
+        question.find('"""') : question.find('"""', question.find('"""') + 3) + 3
+    ]
 
-1) First, let's understand what we need to do:
+    cot_template = """Let's approach this step-by-step:
+
+1) Understanding the problem:
    {question}
 
-2) Let's solve this step by step:
+2) Key requirements:
+   - Input type and validation
+   - Edge cases to handle
+   - Expected output format
 
-def"""
+3) Solution approach:
+   [Think through the logic]
 
-    # Add the step-by-step prefix to the question
-    enhanced_prompt = cot_template.format(question=question)
+4) Implementation:
+{function_signature}
+{docstring}
+    # Implementation below:
+"""
+
+    # Add the step-by-step template while preserving the original signature
+    enhanced_prompt = cot_template.format(
+        question=question, function_signature=func_def, docstring=docstring
+    )
+
+    logging.info(f"Enhanced prompt: {enhanced_prompt}")
 
     return enhanced_prompt
 
 
 ### Entailment Model ###
-
-
 class BaseEntailment:
     """Base class for entailment models."""
 
