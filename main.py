@@ -244,59 +244,10 @@ def evaluate_model(
                 for batch_idx in range(len(outputs.sequences)):
                     error_tracker.increment_total(idx)
                     generated_ids = outputs.sequences[batch_idx]
-                    # Get indices of non-padding tokens
-                    non_pad_indices = (
-                        (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
-                    )
-                    if len(non_pad_indices) > 0:
-                        start_idx = non_pad_indices[0].item()
-
-                        for step, score in enumerate(scores):
-                            if isinstance(score, tuple):
-                                score = score[0]
-                            step_log_probs = torch.log_softmax(score, dim=-1)
-
-                            # Only include if we're past the prompt
-                            if step + start_idx + 1 < len(generated_ids):
-                                token = generated_ids[step + start_idx + 1]
-
-                                # Skip padding tokens
-                                if token == tokenizer.pad_token_id:
-                                    continue
-
-                                # Get probability for this specific sequence's token
-                                log_prob_step = step_log_probs[batch_idx, token].item()
-
-                                # Weight important tokens more heavily
-                                if token in [
-                                    tokenizer.convert_tokens_to_ids(t)
-                                    for t in ["return", "while", "if", "for"]
-                                ]:
-                                    log_prob_step *= (
-                                        1.2  # Boost probability for structural tokens
-                                    )
-
-                                if not np.isfinite(log_prob_step):
-                                    log_prob_step = -10.0
-
-                                log_prob += log_prob_step
-                                sequence_length += 1
-
-                        if sequence_length > 0:
-                            log_prob = log_prob / sequence_length
-                            # Remove this scaling factor as it's reducing the differences
-                            # log_prob = log_prob / 5.0
-
-                        # Use a wider range for clipping
-                        log_prob = np.clip(log_prob, -10.0, 0.0)
-                    else:
-                        log_prob = 0.0
-
-                    solution_log_probs.append(log_prob)
+                    solution_log_probs.append(scores)
 
                     response = tokenizer.decode(generated_ids, skip_special_tokens=True)
                     raw_solutions.append(response)
-                    
 
                     # Extract and fix the function
                     generated_code = ""
@@ -559,7 +510,7 @@ def calculate_implementation_log_prob(
                 log_prob = step_log_probs[batch_idx, token].item()
                 log_probs.append(log_prob)
                 break
-    
+
     return sum(log_probs)
 
 
