@@ -171,6 +171,8 @@ class SpeculativeSamplingModel:
             draft_sequence = outputs.sequences.clone()
             draft_probs = []
 
+            logging.info("Generating draft sequence")
+
             for _ in range(self.gamma):
                 probs = self._get_model_probabilities(
                     self.approx_model, draft_sequence, temperature
@@ -193,6 +195,10 @@ class SpeculativeSamplingModel:
                 # Accept/reject step
                 j = draft_sequence[:, prefix_len + i]
                 r = torch.rand(1)
+
+                logging.info("Accept/reject step")
+                logging.info("Target token probability: %s", target_token_prob)
+                logging.info("Approx token probability: %s", approx_token_prob)
 
                 target_token_prob = target_prob[0, j]
                 approx_token_prob = draft_probs[i][0, j]
@@ -244,6 +250,8 @@ class SpeculativeSamplingModel:
 
         # Extract generated portion
         generated_portion = generated_text[len(input_text) :].strip()
+
+        logging.info("Generated portion: %s", generated_portion)
 
         # Compute log probabilities for generated tokens
         log_probs = []
