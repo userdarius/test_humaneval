@@ -43,8 +43,25 @@ def load_model_and_tokenizer(model_name):
     return model, tokenizer
 
 
-# TODO: Add a class for speculative sampling model and a class for a chain of thought model
 ### Chain of Thought Model ###
+def enhance_prompt_with_cot(question: str) -> str:
+    """
+    Enhance a coding question with Chain of Thought prompting to encourage step-by-step thinking.
+    """
+    cot_template = """Let's solve this coding problem step by step:
+
+1) First, let's understand what we need to do:
+   {question}
+
+2) Let's solve this step by step:
+
+def"""
+
+    # Add the step-by-step prefix to the question
+    enhanced_prompt = cot_template.format(question=question)
+
+    return enhanced_prompt
+
 
 ### Entailment Model ###
 

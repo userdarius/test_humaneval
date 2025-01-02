@@ -1,6 +1,6 @@
 import torch
 from data import get_dataset
-from model import load_model_and_tokenizer
+from model import load_model_and_tokenizer, enhance_prompt_with_cot, EntailmentDeberta
 from tqdm import tqdm
 import ast
 import inspect
@@ -15,7 +15,6 @@ import statistics
 import numpy as np
 from dataclasses import dataclass, asdict
 from collections import defaultdict
-from model import EntailmentDeberta
 from scores import (
     get_semantic_ids,
     cluster_assignment_entropy,
@@ -268,7 +267,12 @@ def evaluate_model(
         logging.info(f"Problem {idx}")
 
         item = dataset[idx]
-        question = item["question"]
+        question = enhance_prompt_with_cot(item["question"])  # Enhance with CoT
+        encoded_input = tokenizer(question, return_tensors="pt", truncation=True)
+        input_ids = encoded_input["input_ids"].to(device)
+        attention_mask = encoded_input.get("attention_mask", None)
+        if attention_mask is not None:
+            attention_mask = attention_mask.to(device)
         canonical_solution = item["canonical_solution"]
         logging.info(f"Question length: {len(question)}")
         logging.debug(f"Question preview: {question[:200]}...")
@@ -282,13 +286,7 @@ def evaluate_model(
         generated_solutions = []
         solution_log_probs = []
 
-        try:
-
-            encoded_input = tokenizer(question, return_tensors="pt", truncation=True)
-            input_ids = encoded_input["input_ids"].to(device)
-            attention_mask = encoded_input.get("attention_mask", None)
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(device)
+        try:            
 
             # Sampling for more diverse solutions
             outputs = model.generate(
