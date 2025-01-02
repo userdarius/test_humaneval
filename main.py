@@ -98,7 +98,11 @@ def extract_function_body(code_string: str) -> Optional[str]:
 
         if impl_start != -1:
             # Use only the code after the implementation marker
+            logging.info(f"Implementation marker found at index {impl_start}")
             code_string = code_string[impl_start + len(implementation_marker) :].strip()
+            logging.info(f"Code after marker: {code_string}")
+        else:
+            logging.info("No implementation marker found")
 
         # First try AST parsing for clean code
         try:
