@@ -320,8 +320,6 @@ def evaluate_model(
                 return_legacy_cache=False,
             )
 
-            logging.info(f"Outputs: {outputs}")
-
             # Calculate sequence log probability
             if hasattr(outputs, "scores") and outputs.scores:
                 scores = outputs.scores
@@ -382,6 +380,13 @@ def evaluate_model(
 
                     response = tokenizer.decode(generated_ids, skip_special_tokens=True)
                     logging.info(f"\nRaw generated code:\n{response}\n")
+                    # Extract the code after the implementation marker
+                    implementation_marker = "4) Implementation:"
+                    impl_start = response.find(implementation_marker)
+                    if impl_start != -1:
+                        response = response[impl_start + len(implementation_marker) :].strip()
+                    logging.info(f"Response after marker: {response}")
+
                     generated_solutions.append(response)
                     solution_log_probs.append(log_prob)
 
