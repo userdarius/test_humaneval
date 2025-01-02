@@ -152,6 +152,7 @@ class SpeculativeSamplingModel:
         self, input_text: str, temperature: float, return_full: bool = False
     ):
         """Generate text using speculative sampling."""
+        logging.info("Starting generation with input text: %s", input_text)
         logging.info("Starting prediction with temperature %s", temperature)
 
         # Tokenize input
@@ -163,9 +164,17 @@ class SpeculativeSamplingModel:
         outputs = SpeculativeOutput(
             sequences=input_ids.clone(), logits=torch.tensor([]), scores=[]
         )
+        generation_step = 0
         # Generation loop
         while outputs.sequences.shape[1] < n_input_tokens + self.max_new_tokens:
+            generation_step += 1
+            logging.info("\nGeneration Step %d:", generation_step)
+
             prefix_len = outputs.sequences.shape[1]
+            current_text = self.tokenizer.decode(
+                outputs.sequences[0], skip_special_tokens=True
+            )
+            logging.info("Current generated text: %s", current_text[len(input_text) :])
 
             # Generate draft sequence using approximation model
             draft_sequence = outputs.sequences.clone()
@@ -180,6 +189,10 @@ class SpeculativeSamplingModel:
                 next_token = self._sample_token(probs)
                 draft_sequence = torch.cat((draft_sequence, next_token), dim=1)
                 draft_probs.append(probs)
+
+                token_text = self.tokenizer.decode(next_token[0])
+                logging.info("Draft token %d: %s (token_id: %d)", 
+                           i+1, token_text, next_token.item())
 
             # Get target model probabilities for the draft sequence
             target_probs = []
@@ -205,9 +218,11 @@ class SpeculativeSamplingModel:
                 logging.info("Approx token probability: %s", approx_token_prob)
 
                 if r > target_token_prob / approx_token_prob:
+                    logging.info("Rejected token")
                     break
 
                 accepted_tokens.append(j)
+                logging.info("Accepted token")
 
             # Update sequence with accepted tokens
             if accepted_tokens:
@@ -215,6 +230,7 @@ class SpeculativeSamplingModel:
                 outputs.sequences = torch.cat(
                     (outputs.sequences, accepted_tensor), dim=1
                 )
+                logging.info("Accepted %d tokens", len(accepted_tokens))
 
             # Sample next token if needed
             if len(accepted_tokens) < self.gamma:
@@ -222,6 +238,8 @@ class SpeculativeSamplingModel:
                 target_prob = target_probs[len(accepted_tokens)]
                 next_token = self._sample_token(target_prob)
                 outputs.sequences = torch.cat((outputs.sequences, next_token), dim=1)
+                logging.info("Sampled new token from target model: %s", token_text)
+
 
             outputs.scores.extend(target_probs[: len(accepted_tokens) + 1])
 
@@ -229,9 +247,12 @@ class SpeculativeSamplingModel:
             generated_text = self.tokenizer.decode(
                 outputs.sequences[0], skip_special_tokens=True
             )
+            logging.info("\nCurrent full output: %s", generated_text)
+
             if self.stop_sequences:
                 for stop_seq in self.stop_sequences:
                     if stop_seq in generated_text[len(input_text) :]:
+                        logging.info("Stop sequence '%s' found. Stopping generation.", stop_seq)
                         return self._process_output(
                             generated_text, input_text, outputs, return_full
                         )
