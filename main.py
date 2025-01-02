@@ -476,53 +476,60 @@ def calculate_implementation_log_prob(
     implementation, full_response, generated_ids, scores, tokenizer, batch_idx
 ):
     """Helper function to calculate log probability for implementation tokens"""
-    # Normalize whitespace and strip
-    implementation = "\n".join(
-        line.rstrip() for line in implementation.splitlines()
-    ).strip()
+    # Normalize implementation and find it in full response
+    impl_lines = implementation.strip().splitlines()
+    full_lines = full_response.strip().splitlines()
 
-    impl_tokens = tokenizer.encode(implementation, add_special_tokens=False)
+    # Find the implementation in the full response
+    impl_start = -1
+    for i, line in enumerate(full_lines):
+        if impl_lines[0].strip() in line:
+            # Check if next lines match
+            matches = True
+            for j, impl_line in enumerate(impl_lines):
+                if (
+                    i + j >= len(full_lines)
+                    or impl_line.strip() not in full_lines[i + j]
+                ):
+                    matches = False
+                    break
+            if matches:
+                impl_start = i
+                break
+
+    if impl_start == -1:
+        logging.warning("Could not find implementation in full response")
+        return -5.0
+
+    # Get tokens for the implementation section
+    impl_section = "\n".join(full_lines[impl_start : impl_start + len(impl_lines)])
+    impl_tokens = tokenizer.encode(impl_section, add_special_tokens=False)
     full_tokens = tokenizer.encode(full_response, add_special_tokens=False)
 
-    logging.debug(f"Implementation:\n{implementation}")
-    logging.debug(f"Number of implementation tokens: {len(impl_tokens)}")
-
-    # Log token sequences for debugging
-    impl_token_texts = [tokenizer.decode([t]) for t in impl_tokens]
-    logging.debug(f"Implementation token texts: {impl_token_texts}")
-
-    # Find implementation start in full sequence
+    # Find implementation start in token sequence
     impl_start_idx = -1
     for i in range(len(full_tokens) - len(impl_tokens) + 1):
-        window = full_tokens[i : i + len(impl_tokens)]
-        if window == impl_tokens:
+        if full_tokens[i : i + len(impl_tokens)] == impl_tokens:
             impl_start_idx = i
-            logging.debug(f"Found implementation at index {i}")
             break
 
     if impl_start_idx == -1:
-        logging.warning("Could not find implementation in full response")
-        # Try finding partial matches for debugging
-        for i in range(len(full_tokens) - min(10, len(impl_tokens)) + 1):
-            window = full_tokens[i : i + min(10, len(impl_tokens))]
-            if window[:5] == impl_tokens[:5]:
-                logging.debug(f"Found partial match at {i}")
+        logging.warning("Could not find implementation tokens in full response")
+        return -5.0
 
     log_prob = 0.0
     sequence_length = 0
     non_pad_indices = (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
 
-    if len(non_pad_indices) > 0 and impl_start_idx != -1:
+    if len(non_pad_indices) > 0:
         start_idx = non_pad_indices[0].item()
-        logging.debug(f"Starting token processing at index {start_idx}")
 
         for step, score in enumerate(scores):
             if isinstance(score, tuple):
                 score = score[0]
-
             step_log_probs = torch.log_softmax(score, dim=-1)
-            token_idx = step + start_idx + 1
 
+            token_idx = step + start_idx + 1
             if token_idx >= impl_start_idx and token_idx < impl_start_idx + len(
                 impl_tokens
             ):
@@ -531,21 +538,11 @@ def calculate_implementation_log_prob(
                     continue
 
                 log_prob_step = step_log_probs[batch_idx, token].item()
-                token_text = tokenizer.decode([token])
-                logging.debug(
-                    f"Token {token_idx}: '{token_text}' -> log_prob = {log_prob_step:.3f}"
-                )
-
-                # No multiplier - just use raw probabilities
                 log_prob += log_prob_step
                 sequence_length += 1
 
-        if sequence_length > 0:
-            log_prob = log_prob / sequence_length
-            logging.debug(f"Final normalized log prob: {log_prob}")
-        else:
-            logging.warning("No valid tokens found in sequence")
-            log_prob = -5.0  # Default value for failed extraction
+    if sequence_length > 0:
+        log_prob = log_prob / sequence_length
 
     return log_prob
 
