@@ -69,20 +69,28 @@ class SpeculativeSamplingModel:
         stop_sequences: Union[List[str], str] = None,
         max_new_tokens: int = 1024,
     ):
-        # Set up logging
-        logging.info("%s", f"\n{'='*50}")
-        logging.info("Initializing SpeculativeSamplingModel:")
-        logging.info("Target model: %s", target_model_name)
-        logging.info("Approximation (Draft) model: %s", approx_model_name)
-
-        # Initialize models and tokenizers
+       logging.info("Loading target model...")
         self.target_model = AutoModelForCausalLM.from_pretrained(
-            target_model_name, device_map="auto"
+            target_model_name, 
+            device_map="auto"
         )
+        # Wait for target model to load
+        self.target_model.eval()
+        torch.cuda.synchronize()
+        
+        logging.info("Loading approximation model...")
         self.approx_model = AutoModelForCausalLM.from_pretrained(
-            approx_model_name, device_map="auto"
+            approx_model_name, 
+            device_map="auto"
         )
+        # Wait for approx model to load
+        self.approx_model.eval()
+        torch.cuda.synchronize()
+        
+        logging.info("Loading tokenizer...")
         self.tokenizer = AutoTokenizer.from_pretrained(target_model_name)
+        
+        logging.info("Model loading complete")
 
         # Set parameters
         self.max_new_tokens = max_new_tokens
