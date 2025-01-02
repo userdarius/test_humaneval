@@ -59,17 +59,26 @@ class BaseEntailment:
 class EntailmentDeberta(BaseEntailment):
     """Entailment model using Deberta-v2-xlarge-mnli with multi-GPU support."""
 
-    def __init__(self, device_map="auto"):  # Change from device to device_map
+    def __init__(self, devices=None):
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-base")
         self.model = AutoModelForSequenceClassification.from_pretrained(
             "microsoft/deberta-v2-xlarge-mnli",
-            device_map=device_map,  # Use device_map instead of .to(device)
+            torch_dtype=torch.float16,
         )
+        
+        if devices is None:
+            devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
+        
+        if len(devices) > 1:
+            self.model = torch.nn.DataParallel(self.model, device_ids=range(len(devices)))
+            self.device = devices[0]  # Primary device
+        else:
+            self.device = devices[0]
+            
+        self.model = self.model.to(self.device)
 
     def check_implication(self, text1, text2, *args, **kwargs):
-        # Note: inputs should go to the same device as the model's first layer
-        device = next(self.model.parameters()).device
-        inputs = self.tokenizer(text1, text2, return_tensors="pt").to(device)
+        inputs = self.tokenizer(text1, text2, return_tensors="pt").to(self.device)
         outputs = self.model(**inputs)
         logits = outputs.logits
         probs = F.softmax(logits, dim=1)[0]
