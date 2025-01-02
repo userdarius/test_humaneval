@@ -182,7 +182,7 @@ class SpeculativeSamplingModel:
 
             logging.info("Generating draft sequence")
 
-            for _ in range(self.gamma):
+            for i in range(self.gamma):
                 probs = self._get_model_probabilities(
                     self.approx_model, draft_sequence, temperature
                 )
