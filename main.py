@@ -703,7 +703,7 @@ def calculate_pass_at_k(n_samples: int, n_correct: int, k: int) -> float:
 
 def main():
     # Model parameters
-    model_name = "meta-llama/Llama-3.2-8B-Instruct"  # need to add HF_TOKEN
+    model_name = "meta-llama/Llama-3.1-8B-Instruct"  # need to add HF_TOKEN
 
     # Load dataset
     logging.info("Loading dataset...")
