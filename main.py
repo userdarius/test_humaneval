@@ -92,52 +92,27 @@ def extract_function_body(code_string: str) -> Optional[str]:
     """
     try:
         logging.info("Starting function body extraction")
-        logging.debug(f"Input code preview: {code_string[:200]}...")
-        
-        # First check for implementation marker with different possible formats
-        implementation_markers = [
-            "4) Implementation:",
-            "4)Implementation:",
-            "4. Implementation:",
-            "4.Implementation:",
-            "4) implementation:",
-            "4.implementation:"
-        ]
-        
-        impl_start = -1
-        found_marker = None
-        
-        for marker in implementation_markers:
-            impl_start = code_string.find(marker)
-            if impl_start != -1:
-                found_marker = marker
-                break
-        
-        logging.info(f"Implementation marker found: {found_marker is not None}")
-        if found_marker:
-            logging.info(f"Found marker: '{found_marker}' at position {impl_start}")
+        # First check for implementation marker
+        implementation_marker = "4) Implementation:"
+        impl_start = code_string.find(implementation_marker)
+
+        if impl_start != -1:
             # Use only the code after the implementation marker
-            code_string = code_string[impl_start + len(found_marker):].strip()
-            logging.info(f"Code after marker preview: {code_string[:200]}...")
+            logging.info(f"Implementation marker found at index {impl_start}")
+            code_string = code_string[impl_start + len(implementation_marker) :].strip()
+            logging.info(f"Code after marker: {code_string}")
         else:
-            logging.warning("No implementation marker found, using full code string")
-            logging.debug("Searched for markers: " + ", ".join(implementation_markers))
+            logging.info("No implementation marker found")
 
         # First try AST parsing for clean code
         try:
             tree = ast.parse(code_string)
             for node in ast.walk(tree):
                 if isinstance(node, ast.FunctionDef):
-                    logging.info(f"Found function definition: {node.name}")
                     # Get the function body lines
                     lines = code_string.split("\n")
-                    logging.debug(f"Total lines: {len(lines)}")
-                    logging.debug(f"Function starts at line {node.body[0].lineno}")
-                    logging.debug(f"Function ends at line {node.end_lineno}")
-                    
                     # Skip function definition line
                     body_lines = lines[node.body[0].lineno - 1 : node.end_lineno]
-                    
                     # Remove docstring if present
                     if isinstance(node.body[0], ast.Expr) and isinstance(
                         node.body[0].value, ast.Str
@@ -145,28 +120,20 @@ def extract_function_body(code_string: str) -> Optional[str]:
                         body_lines = body_lines[
                             node.body[1].lineno - node.body[0].lineno :
                         ]
-                    
-                    result = "\n".join(body_lines).strip()
-                    logging.info(f"Successfully extracted via AST parsing: {result[:200]}...")
-                    return result
-                    
-        except (SyntaxError, AttributeError) as e:
-            logging.warning(f"AST parsing failed: {str(e)}")
+                    return "\n".join(body_lines).strip()
+        except (SyntaxError, AttributeError):
             pass
 
         # Fallback: Manual parsing
         lines = code_string.split("\n")
-        logging.info(f"Starting manual parsing with {len(lines)} lines")
+        logging.info(f"Lines: {lines}")
         content_lines = []
         in_docstring = False
         implementation_started = False
         docstring_delim = 0
 
-        for i, line in enumerate(lines):
+        for line in lines:
             stripped = line.strip()
-            
-            if i < 5:  # Log first few lines for debugging
-                logging.debug(f"Processing line {i}: {line}")
 
             # Handle docstring boundaries
             if '"""' in line or "'''" in line:
@@ -194,26 +161,22 @@ def extract_function_body(code_string: str) -> Optional[str]:
             if not implementation_started:
                 if stripped and line[0].isspace():  # Check for indentation
                     implementation_started = True
-                    logging.info(f"Implementation started at line {i}: {line}")
 
             if implementation_started:
                 if not line[0].isspace():  # End of function
-                    logging.info(f"Implementation ended at line {i}: {line}")
                     break
                 content_lines.append(line)
 
         if not content_lines:
-            logging.warning("No content lines found during manual parsing")
             return None
 
         # Join implementation lines
         implementation = "\n".join(content_lines)
-        logging.info(f"Successfully extracted implementation via manual parsing: {implementation[:200]}...")
+        logging.info(f"Implementation: {implementation}")
         return implementation.strip()
 
     except Exception as e:
         logging.error(f"Error in function body extraction: {e}")
-        logging.exception(e)  # This will log the full stack trace
         return None
 
 
@@ -356,6 +319,8 @@ def evaluate_model(
                 early_stopping=False,
                 return_legacy_cache=False,
             )
+
+            logging.info(f"Outputs: {outputs}")
 
             # Calculate sequence log probability
             if hasattr(outputs, "scores") and outputs.scores:
