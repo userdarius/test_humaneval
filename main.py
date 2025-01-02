@@ -444,33 +444,9 @@ def evaluate_model(
 
         # Calculate semantic metrics for all solutions
         semantic_metrics = {}
-        logging.info(
-            f"\nCalculating semantic metrics for {len(generated_solutions)} solutions"
-        )
 
         if generated_solutions:
-            logging.debug(
-                "Sample solution lengths: "
-                + str([len(sol) for sol in generated_solutions[:3]])
-                + "..."
-            )
-
-            # Calculate entropy metrics based on raw solutions first
-            semantic_ids = get_semantic_ids(generated_solutions, entailment_model)
-            logging.info(f"Number of semantic clusters: {len(set(semantic_ids))}")
-
-            semantic_entropy = cluster_assignment_entropy(semantic_ids)
-            logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
-
-            logging.info(f"Solution log probs: {solution_log_probs}")
-
-            pred_entropy = predictive_entropy(solution_log_probs)
-            logging.info(f"Predictive entropy: {pred_entropy:.3f}")
-
-            pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
-            logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
-
-            # Process generated solutions to extract function bodies
+            # Process generated solutions to extract function bodies first
             logging.info(f"Canonical solution: {canonical_solution}")
             processed_solutions = []
 
@@ -480,22 +456,41 @@ def evaluate_model(
                 if implementation:
                     processed_solutions.append(implementation)
 
-            if processed_solutions:
+            # Use the best available solutions for all metrics
+            solutions_for_metrics = processed_solutions if processed_solutions else generated_solutions
+            
+            logging.info(f"\nCalculating semantic metrics for {len(solutions_for_metrics)} solutions")
+            logging.debug(
+                "Sample solution lengths: "
+                + str([len(sol) for sol in solutions_for_metrics[:3]])
+                + "..."
+            )
+
+            # Calculate entropy metrics using best available solutions
+            semantic_ids = get_semantic_ids(solutions_for_metrics, entailment_model)
+            num_clusters = len(set(semantic_ids))
+            logging.info(f"Number of semantic clusters: {num_clusters}")
+
+            semantic_entropy = cluster_assignment_entropy(semantic_ids)
+            logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
+
+            logging.info(f"Solution log probs: {solution_log_probs}")
+            pred_entropy = predictive_entropy(solution_log_probs)
+            pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
+            logging.info(f"Predictive entropy: {pred_entropy:.3f}")
+            logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
+
+            if solutions_for_metrics:
                 # clear cache
                 torch.cuda.empty_cache()
                 gc.collect()
-                logging.info(
-                    f"Successfully extracted {len(processed_solutions)} implementations"
-                )
-                logging.debug(
-                    f"Extracted implementations: {processed_solutions[:3]}..."
-                )
+                logging.info(f"Calculating alignments for {len(solutions_for_metrics)} solutions")
 
                 # Calculate entailment for each solution individually
                 canonical_alignments = []
                 reverse_alignments = []
 
-                for solution in processed_solutions:
+                for solution in solutions_for_metrics:
                     # Measure if canonical solution entails the generated solution
                     canon_align = context_entails_response(
                         canonical_solution, [solution], entailment_model
@@ -513,40 +508,30 @@ def evaluate_model(
                     )
 
                 # Calculate average alignments
-                canonical_alignment = sum(canonical_alignments) / len(
-                    canonical_alignments
-                )
+                canonical_alignment = sum(canonical_alignments) / len(canonical_alignments)
                 reverse_alignment = sum(reverse_alignments) / len(reverse_alignments)
                 bidirectional = (canonical_alignment + reverse_alignment) / 2
 
-                logging.info(
-                    f"Average canonical alignment score: {canonical_alignment:.3f}"
-                )
-                logging.info(
-                    f"Average reverse alignment score: {reverse_alignment:.3f}"
-                )
-                logging.info(
-                    f"Average bidirectional alignment score: {bidirectional:.3f}"
-                )
+                logging.info(f"Average canonical alignment score: {canonical_alignment:.3f}")
+                logging.info(f"Average reverse alignment score: {reverse_alignment:.3f}")
+                logging.info(f"Average bidirectional alignment score: {bidirectional:.3f}")
             else:
-                logging.warning(
-                    "No valid function bodies extracted for alignment calculation"
-                )
+                logging.warning("No valid solutions available for alignment calculation")
                 canonical_alignment = 0.0
                 reverse_alignment = 0.0
+                bidirectional = 0.0
 
             # Store all metrics
             semantic_metrics = {
                 "semantic_entropy": semantic_entropy,
                 "predictive_entropy": pred_entropy,
                 "predictive_entropy_rao": pred_entropy_rao,
-                "num_semantic_clusters": len(set(semantic_ids)),
+                "num_semantic_clusters": num_clusters,
                 "num_solutions": len(generated_solutions),
                 "num_processed_solutions": len(processed_solutions),
                 "canonical_alignment": canonical_alignment,
                 "reverse_alignment": reverse_alignment,
-                "bidirectional_alignment": (canonical_alignment + reverse_alignment)
-                / 2,
+                "bidirectional_alignment": bidirectional,
             }
 
         pass_at_k = calculate_pass_at_k(n_samples, correct_samples, k)
