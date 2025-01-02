@@ -233,7 +233,7 @@ def evaluate_model(
             outputs = model.generate(
                 input_ids,
                 attention_mask=attention_mask,
-                max_new_tokens=1024,
+                max_new_tokens=512,
                 temperature=0.6,
                 top_p=0.8,
                 top_k=100,
