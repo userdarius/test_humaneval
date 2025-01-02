@@ -81,7 +81,7 @@ def enhance_prompt_with_cot(question: str) -> str:
 
 4) Implementation:
 {function_signature}
-{docstring}
+    {docstring}
     # Implementation below:
 """
 
