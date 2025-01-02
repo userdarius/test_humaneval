@@ -87,46 +87,88 @@ class ErrorTracker:
 def extract_function_body(code_string: str) -> Optional[str]:
     """
     Extract just the function body focusing on the actual implementation.
+    Handles both docstrings and implementation code more robustly.
     First checks for "4) Implementation:" marker.
     """
     try:
         # First check for implementation marker
         implementation_marker = "4) Implementation:"
         impl_start = code_string.find(implementation_marker)
-        
+
         if impl_start != -1:
-            # Get everything after the implementation marker
-            implementation_section = code_string[impl_start + len(implementation_marker):].strip()
-            
-            # Find the first function definition after the marker
-            def_start = implementation_section.find("def ")
-            if def_start == -1:
-                return None
-                
-            # Get the rest of the code from the function definition onwards
-            function_code = implementation_section[def_start:]
-            
-            # Try AST parsing on the function code
-            try:
-                tree = ast.parse(function_code)
-                for node in ast.walk(tree):
-                    if isinstance(node, ast.FunctionDef):
-                        # Get all lines from function definition to end of function
-                        lines = function_code.split('\n')
-                        return '\n'.join(lines[:node.end_lineno]).strip()
-            except (SyntaxError, AttributeError):
-                # If AST parsing fails, fall back to simpler extraction
-                lines = function_code.split('\n')
-                result = []
-                for line in lines:
-                    if not line.strip():  # Skip empty lines
-                        continue
-                    if line.strip().startswith(('if __name__', 'class', '@')):
-                        break
-                    result.append(line)
-                return '\n'.join(result).strip()
-        
-        return None
+            # Use only the code after the implementation marker
+            code_string = code_string[impl_start + len(implementation_marker) :].strip()
+
+        # First try AST parsing for clean code
+        try:
+            tree = ast.parse(code_string)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef):
+                    # Get the function body lines
+                    lines = code_string.split("\n")
+                    # Skip function definition line
+                    body_lines = lines[node.body[0].lineno - 1 : node.end_lineno]
+                    # Remove docstring if present
+                    if isinstance(node.body[0], ast.Expr) and isinstance(
+                        node.body[0].value, ast.Str
+                    ):
+                        body_lines = body_lines[
+                            node.body[1].lineno - node.body[0].lineno :
+                        ]
+                    return "\n".join(body_lines).strip()
+        except (SyntaxError, AttributeError):
+            pass
+
+        # Fallback: Manual parsing
+        lines = code_string.split("\n")
+        logging.info(f"Lines: {lines}")
+        content_lines = []
+        in_docstring = False
+        implementation_started = False
+        docstring_delim = 0
+
+        for line in lines:
+            stripped = line.strip()
+
+            # Handle docstring boundaries
+            if '"""' in line or "'''" in line:
+                docstring_delim += line.count('"""') + line.count("'''")
+                in_docstring = docstring_delim % 2 != 0
+                continue
+
+            # Skip if we're in a docstring
+            if in_docstring:
+                continue
+
+            # Skip function definition and empty lines
+            if stripped.startswith("def ") or not stripped:
+                continue
+
+            # Skip comment lines and doctest examples
+            if stripped.startswith("#") or ">>>" in line:
+                continue
+
+            # Skip common non-implementation markers
+            if stripped.startswith(("@", "class ", "if __name__")):
+                continue
+
+            # This is likely implementation code
+            if not implementation_started:
+                if stripped and line[0].isspace():  # Check for indentation
+                    implementation_started = True
+
+            if implementation_started:
+                if not line[0].isspace():  # End of function
+                    break
+                content_lines.append(line)
+
+        if not content_lines:
+            return None
+
+        # Join implementation lines
+        implementation = "\n".join(content_lines)
+
+        return implementation.strip()
 
     except Exception as e:
         logging.error(f"Error in function body extraction: {e}")
