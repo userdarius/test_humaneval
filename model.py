@@ -53,18 +53,16 @@ def enhance_prompt_with_cot(question: str) -> str:
     def_start = question.find("\ndef ")
     if def_start == -1:
         def_start = question.find("def ")
-    
+
     # Find complete signature (including return type)
     def_end = question.find("\n", def_start + 1)
     if def_end == -1:
         def_end = len(question)
-    
+
     function_signature = question[def_start:def_end].strip()
-    logging.info(f"Function signature: {function_signature}")
     docstring = question[
         question.find('"""') : question.find('"""', question.find('"""') + 3) + 3
     ]
-    logging.info(f"Docstring: {docstring}")
 
     cot_template = """Let's approach this step-by-step:
 

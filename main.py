@@ -88,8 +88,17 @@ def extract_function_body(code_string: str) -> Optional[str]:
     """
     Extract just the function body focusing on the actual implementation.
     Handles both docstrings and implementation code more robustly.
+    First checks for "4) Implementation:" marker.
     """
     try:
+        # First check for implementation marker
+        implementation_marker = "4) Implementation:"
+        impl_start = code_string.find(implementation_marker)
+
+        if impl_start != -1:
+            # Use only the code after the implementation marker
+            code_string = code_string[impl_start + len(implementation_marker) :].strip()
+
         # First try AST parsing for clean code
         try:
             tree = ast.parse(code_string)
@@ -267,7 +276,6 @@ def evaluate_model(
         logging.info(f"Problem {idx}")
 
         item = dataset[idx]
-        logging.info(f"Original question: {item['question']}")
         question = enhance_prompt_with_cot(item["question"])  # Enhance with CoT
         encoded_input = tokenizer(question, return_tensors="pt", truncation=True)
         input_ids = encoded_input["input_ids"].to(device)
@@ -287,7 +295,7 @@ def evaluate_model(
         generated_solutions = []
         solution_log_probs = []
 
-        try:            
+        try:
 
             # Sampling for more diverse solutions
             outputs = model.generate(
