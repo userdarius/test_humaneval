@@ -94,7 +94,7 @@ def get_semantic_ids(strings_list, model, strict_entailment=False, example=None)
     # Log distribution of semantic IDs
     unique_ids = set(semantic_set_ids)
     id_counts = {id_val: semantic_set_ids.count(id_val) for id_val in unique_ids}
-    logging.info(f"Final semantic ID distribution: {id_ccounts}")
+    logging.info(f"Final semantic ID distribution: {id_counts}")
 
     return semantic_set_ids
 
