@@ -69,7 +69,7 @@ class SpeculativeSamplingModel:
         stop_sequences: Union[List[str], str] = None,
         max_new_tokens: int = 1024,
     ):
-       logging.info("Loading target model...")
+        logging.info("Loading target model...")
         self.target_model = AutoModelForCausalLM.from_pretrained(
             target_model_name, 
             device_map="auto"
