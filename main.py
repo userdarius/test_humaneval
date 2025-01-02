@@ -309,7 +309,6 @@ def evaluate_model(
             if hasattr(outputs, "scores") and outputs.scores:
                 scores = outputs.scores
                 # For each sequence in the batch
-                # noqa: B007 
                 for batch_idx in range(len(outputs.sequences)):
                     error_tracker.increment_total(idx)
                     generated_ids = outputs.sequences[batch_idx]
@@ -377,7 +376,9 @@ def evaluate_model(
                     logging.info(f"Response after marker: {response}")
 
                     # remove anything after 
-                    response = response[: response.find("5) ")]
+                    response = response[: response.find(" 5) ")]
+
+                    logging.info(f"Response after removing 5): {response}")
 
                     generated_solutions.append(response)
                     solution_log_probs.append(log_prob)
