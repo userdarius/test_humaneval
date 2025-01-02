@@ -328,6 +328,7 @@ def evaluate_model(
             logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
 
             if solution_log_probs:
+                logging.info(f"Log probabilities: {solution_log_probs}")
                 pred_entropy = predictive_entropy(solution_log_probs)
                 pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
                 logging.info(f"Predictive entropy: {pred_entropy:.3f}")
@@ -522,6 +523,8 @@ def calculate_implementation_log_prob(
         if sequence_length > 0:
             log_prob = log_prob / sequence_length
             log_prob = np.clip(log_prob, -10.0, 0.0)
+            logging.debug(f"Calculated log prob: {log_prob}")  # Add this line
+
         else:
             log_prob = 0.0
 
