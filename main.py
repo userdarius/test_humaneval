@@ -364,7 +364,7 @@ def evaluate_model(
                         log_prob = 0.0
 
                     response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-                    logging.info(f"\nRaw generated code:\n{response}\n")
+                    logging.info(f"\nRaw generated output:\n{response}\n")
 
                     # Extract the code after the implementation marker
                     implementation_marker = "4) Implementation:"
@@ -387,7 +387,7 @@ def evaluate_model(
                     test_env = create_test_env()
                     if try_run_tests(response, entry_point, test_code, test_env):
                         correct_samples += 1
-                        logging.info("✓ Sample passed all tests on raw response")
+                        logging.info("✓ Sample passed all tests on raw code after extraction")
                         continue
 
                     # Extract function and try fixes
