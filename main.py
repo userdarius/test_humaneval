@@ -262,13 +262,9 @@ def evaluate_model(
                                 f"Generated code after MAIN extraction: {generated_code}"
                             )
                             # Calculate log probabilities for the implementation tokens
-                            implementation = extract_function_body(generated_code)
-                            logging.info(
-                                f"Generated code after BODY extraction: {implementation}"
-                            )
-                            if implementation:
+                            if generated_code:
                                 log_prob = calculate_implementation_log_prob(
-                                    implementation,
+                                    generated_code,
                                     generated_ids,
                                     scores,
                                     tokenizer,
@@ -522,7 +518,7 @@ def calculate_implementation_log_prob(
                 log_prob = step_log_probs[batch_idx, token].item()
                 log_probs.append(log_prob)
                 break
-
+    
     return sum(log_probs)
 
 
