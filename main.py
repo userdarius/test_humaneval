@@ -283,12 +283,9 @@ def evaluate_model(
         solution_log_probs = []
 
         try:
-
-            encoded_input = tokenizer(question, return_tensors="pt", truncation=True)
-            input_ids = encoded_input["input_ids"]
             # Sampling for more diverse solutions
             outputs = model.generate(
-                input_ids,
+                question,
                 temperature=0.6,
                 return_full=True
             )
