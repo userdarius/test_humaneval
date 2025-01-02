@@ -269,7 +269,6 @@ def evaluate_model(
                             if implementation:
                                 log_prob = calculate_implementation_log_prob(
                                     implementation,
-                                    response,
                                     generated_ids,
                                     scores,
                                     tokenizer,
@@ -476,7 +475,6 @@ def extract_and_fix_function(code, entry_point):
 
 def calculate_implementation_log_prob(
     implementation: str,
-    full_response: str,
     generated_ids: torch.Tensor,
     scores: List[torch.Tensor],
     tokenizer,
@@ -525,7 +523,7 @@ def calculate_implementation_log_prob(
                 log_probs.append(log_prob)
                 break
 
-    return log_probs
+    return sum(log_probs)
 
 
 def calculate_aggregate_metrics(results):
