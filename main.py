@@ -309,9 +309,9 @@ def evaluate_model(
             if hasattr(outputs, "scores") and outputs.scores:
                 scores = outputs.scores
                 # For each sequence in the batch
-                for batch_idx in range(len(outputs.sequences)):
+                for batch_idx, sequence in enumerate(outputs.sequences):
                     error_tracker.increment_total(idx)
-                    generated_ids = outputs.sequences[batch_idx]
+                    generated_ids = sequence  # No need to index outputs.sequences
                     log_prob = 0
                     sequence_length = 0
 
@@ -373,16 +373,13 @@ def evaluate_model(
                         response = response[
                             impl_start + len(implementation_marker) :
                         ].strip()
-                    logging.info(f"Response after marker: {response}")
 
-                    # remove anything after 
+                    # remove anything after
                     if "5) " in response:
                         response = response[: response.find("5) ")]
-                        logging.info(f"Response after removing 5): {response}")
                     else:
                         response = response
 
-                    logging.info(f"Final response: {response}")
                     generated_solutions.append(response)
                     solution_log_probs.append(log_prob)
 
@@ -545,6 +542,9 @@ def evaluate_model(
                     processed_solutions.append(implementation)
 
             if processed_solutions:
+                # clear cache
+                torch.cuda.empty_cache()
+                gc.collect()
                 logging.info(
                     f"Successfully extracted {len(processed_solutions)} implementations"
                 )
