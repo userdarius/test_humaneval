@@ -244,6 +244,9 @@ def evaluate_model(
                 for batch_idx in range(len(outputs.sequences)):
                     error_tracker.increment_total(idx)
                     generated_ids = outputs.sequences[batch_idx]
+                    log_prob = 0
+                    sequence_length = 0
+
                     # Get indices of non-padding tokens
                     non_pad_indices = (
                         (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
