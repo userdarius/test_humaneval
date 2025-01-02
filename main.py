@@ -528,6 +528,8 @@ def calculate_implementation_log_prob(
         else:
             log_prob = 0.0
 
+        logging.debug(f"Final log prob: {log_prob}")
+
     return log_prob
 
 
