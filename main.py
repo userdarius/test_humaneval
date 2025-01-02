@@ -476,75 +476,76 @@ def calculate_implementation_log_prob(
     implementation, full_response, generated_ids, scores, tokenizer, batch_idx
 ):
     """Helper function to calculate log probability for implementation tokens"""
+    # Normalize whitespace and strip
+    implementation = "\n".join(
+        line.rstrip() for line in implementation.splitlines()
+    ).strip()
+
     impl_tokens = tokenizer.encode(implementation, add_special_tokens=False)
     full_tokens = tokenizer.encode(full_response, add_special_tokens=False)
 
-    print("Implementation:", implementation)
-    print("Full response:", full_response)
-    print("Impl tokens:", impl_tokens)
-    print("Full tokens:", full_tokens)
+    logging.debug(f"Implementation:\n{implementation}")
+    logging.debug(f"Number of implementation tokens: {len(impl_tokens)}")
+
+    # Log token sequences for debugging
+    impl_token_texts = [tokenizer.decode([t]) for t in impl_tokens]
+    logging.debug(f"Implementation token texts: {impl_token_texts}")
 
     # Find implementation start in full sequence
     impl_start_idx = -1
     for i in range(len(full_tokens) - len(impl_tokens) + 1):
-        if full_tokens[i : i + len(impl_tokens)] == impl_tokens:
+        window = full_tokens[i : i + len(impl_tokens)]
+        if window == impl_tokens:
             impl_start_idx = i
+            logging.debug(f"Found implementation at index {i}")
             break
 
-    log_prob = 0
+    if impl_start_idx == -1:
+        logging.warning("Could not find implementation in full response")
+        # Try finding partial matches for debugging
+        for i in range(len(full_tokens) - min(10, len(impl_tokens)) + 1):
+            window = full_tokens[i : i + min(10, len(impl_tokens))]
+            if window[:5] == impl_tokens[:5]:
+                logging.debug(f"Found partial match at {i}")
+
+    log_prob = 0.0
     sequence_length = 0
     non_pad_indices = (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
 
     if len(non_pad_indices) > 0 and impl_start_idx != -1:
         start_idx = non_pad_indices[0].item()
+        logging.debug(f"Starting token processing at index {start_idx}")
 
         for step, score in enumerate(scores):
             if isinstance(score, tuple):
                 score = score[0]
+
             step_log_probs = torch.log_softmax(score, dim=-1)
-
-            # Add debug prints
-            print(f"Step {step} score shape:", score.shape)
-            print(f"Step {step} logprobs shape:", step_log_probs.shape)
-            print(f"Step {step} max logprob:", step_log_probs.max().item())
-            print(f"Step {step} min logprob:", step_log_probs.min().item())
-
             token_idx = step + start_idx + 1
+
             if token_idx >= impl_start_idx and token_idx < impl_start_idx + len(
                 impl_tokens
             ):
                 token = generated_ids[token_idx]
-                print(f"Processing token {token} at position {token_idx}")
-                print(f"Token text:", tokenizer.decode([token]))
                 if token == tokenizer.pad_token_id:
                     continue
 
                 log_prob_step = step_log_probs[batch_idx, token].item()
+                token_text = tokenizer.decode([token])
+                logging.debug(
+                    f"Token {token_idx}: '{token_text}' -> log_prob = {log_prob_step:.3f}"
+                )
 
-                if token in [
-                    tokenizer.convert_tokens_to_ids(t)
-                    for t in ["return", "while", "if", "for"]
-                ]:
-                    log_prob_step *= 1.2
-
-                if not np.isfinite(log_prob_step):
-                    log_prob_step = -10.0
-
+                # No multiplier - just use raw probabilities
                 log_prob += log_prob_step
                 sequence_length += 1
-                # Before returning
-                print(f"Total sequence length: {sequence_length}")
-                print(f"Total log prob before normalization: {log_prob}")
 
         if sequence_length > 0:
             log_prob = log_prob / sequence_length
-            log_prob = np.clip(log_prob, -10.0, 0.0)
-            logging.debug(f"Calculated log prob: {log_prob}")  # Add this line
-
+            logging.debug(f"Final normalized log prob: {log_prob}")
         else:
-            log_prob = 0.0
-
-        logging.debug(f"Final log prob: {log_prob}")
+            logging.warning("No valid tokens found in sequence")
+            log_prob = -5.0  # Default value for failed extraction
 
     return log_prob
 
