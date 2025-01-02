@@ -285,11 +285,7 @@ def evaluate_model(
         try:
 
             encoded_input = tokenizer(question, return_tensors="pt", truncation=True)
-            input_ids = encoded_input["input_ids"].to(device)
-            attention_mask = encoded_input.get("attention_mask", None)
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(device)
-
+            input_ids = encoded_input["input_ids"]
             # Sampling for more diverse solutions
             outputs = model.generate(
                 input_ids,
