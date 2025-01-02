@@ -212,7 +212,8 @@ def evaluate_model(
         test_code = problem["test_code"]
         correct_samples = 0
 
-        # Store all processed solutions and their scores
+        # Store all solutions (both raw and processed) and their scores
+        raw_solutions = []
         processed_solutions = []
         solution_log_probs = []
 
@@ -246,183 +247,41 @@ def evaluate_model(
                     generated_ids = outputs.sequences[batch_idx]
                     response = tokenizer.decode(generated_ids, skip_special_tokens=True)
                     logging.info(f"\nRaw generated code:\n{response}\n")
+                    raw_solutions.append(response)
 
-                    # First use original extraction and fixing logic
+                    # Extract and fix the function
                     generated_code = ""
                     if "def " + entry_point in response:
                         start = response.find("def " + entry_point)
                         generated_code = response[start:]
+                        generated_code = extract_and_fix_function(
+                            generated_code, entry_point
+                        )
 
-                        # Try AST parsing
-                        try:
-                            tree = ast.parse(generated_code)
-                            for node in ast.walk(tree):
-                                if (
-                                    isinstance(node, ast.FunctionDef)
-                                    and node.name == entry_point
-                                ):
-                                    end = node.end_lineno
-                                    generated_code = "\n".join(
-                                        generated_code.split("\n")[:end]
-                                    )
-                                    break
-                        except SyntaxError:
-                            # Fallback: manual parsing
-                            lines = generated_code.split("\n")
-                            result = []
-                            in_docstring = False
-                            docstring_delim = 0
-
-                            for line in lines:
-                                stripped = line.strip()
-                                if '"""' in line or "'''" in line:
-                                    docstring_delim += line.count('"""') + line.count(
-                                        "'''"
-                                    )
-                                    in_docstring = docstring_delim % 2 != 0
-                                if (
-                                    not in_docstring
-                                    and stripped
-                                    and not (
-                                        line[0].isspace()
-                                        or stripped.startswith(
-                                            (
-                                                "def",
-                                                "return",
-                                                "#",
-                                                '"',
-                                                "'",
-                                                "assert",
-                                                "test_",
-                                                "Test",
-                                            )
-                                        )
-                                        or ">>>" in line
-                                    )
-                                ):
-                                    break
-                                result.append(line)
-                            generated_code = "\n".join(result)
-
-                        # Fix missing syntax elements
-                        if generated_code and not generated_code.strip().endswith(":"):
-                            if ":" not in generated_code:
-                                generated_code += ":"
-                        if generated_code and "\n" not in generated_code:
-                            generated_code += "\n    pass"
-
-                        # Fix indentation
                         if generated_code:
-                            lines = generated_code.split("\n")
-                            fixed_lines = []
-                            base_indent = None
-                            for line in lines:
-                                if line.strip():
-                                    if base_indent is None and line.startswith("def"):
-                                        base_indent = len(line) - len(line.lstrip())
-                                    if base_indent is not None:
-                                        stripped = (
-                                            line[base_indent:]
-                                            if line.startswith(" " * base_indent)
-                                            else line
-                                        )
-                                        fixed_lines.append(
-                                            "    " + stripped
-                                            if stripped.strip()
-                                            and not stripped.startswith("def")
-                                            else stripped
-                                        )
-                            generated_code = "\n".join(fixed_lines)
                             logging.info(f"\nFixed function:\n{generated_code}\n")
+                            processed_solutions.append(generated_code)
 
-                            # Extract implementation for log probability calculation only
+                            # Calculate log probabilities for the implementation tokens
                             implementation = extract_function_body(generated_code)
                             if implementation:
-                                # Calculate log probabilities for the implementation tokens only
-                                impl_tokens = tokenizer.encode(
-                                    implementation, add_special_tokens=False
+                                log_prob = calculate_implementation_log_prob(
+                                    implementation,
+                                    response,
+                                    generated_ids,
+                                    scores,
+                                    tokenizer,
+                                    batch_idx,
                                 )
-                                full_tokens = tokenizer.encode(
-                                    response, add_special_tokens=False
-                                )
+                                solution_log_probs.append(log_prob)
 
-                                # Find implementation start in full sequence
-                                impl_start_idx = -1
-                                for i in range(len(full_tokens) - len(impl_tokens) + 1):
-                                    if (
-                                        full_tokens[i : i + len(impl_tokens)]
-                                        == impl_tokens
-                                    ):
-                                        impl_start_idx = i
-                                        break
-
-                                log_prob = 0
-                                sequence_length = 0
-                                non_pad_indices = (
-                                    (generated_ids != tokenizer.pad_token_id)
-                                    .nonzero()
-                                    .squeeze(-1)
-                                )
-
-                                if len(non_pad_indices) > 0 and impl_start_idx != -1:
-                                    start_idx = non_pad_indices[0].item()
-
-                                    for step, score in enumerate(scores):
-                                        if isinstance(score, tuple):
-                                            score = score[0]
-                                        step_log_probs = torch.log_softmax(
-                                            score, dim=-1
-                                        )
-
-                                        token_idx = step + start_idx + 1
-                                        if (
-                                            token_idx >= impl_start_idx
-                                            and token_idx
-                                            < impl_start_idx + len(impl_tokens)
-                                        ):
-                                            token = generated_ids[token_idx]
-                                            if token == tokenizer.pad_token_id:
-                                                continue
-
-                                            log_prob_step = step_log_probs[
-                                                batch_idx, token
-                                            ].item()
-
-                                            if token in [
-                                                tokenizer.convert_tokens_to_ids(t)
-                                                for t in [
-                                                    "return",
-                                                    "while",
-                                                    "if",
-                                                    "for",
-                                                ]
-                                            ]:
-                                                log_prob_step *= 1.2
-
-                                            if not np.isfinite(log_prob_step):
-                                                log_prob_step = -10.0
-
-                                            log_prob += log_prob_step
-                                            sequence_length += 1
-
-                                    if sequence_length > 0:
-                                        log_prob = log_prob / sequence_length
-                                        log_prob = np.clip(log_prob, -10.0, 0.0)
-                                    else:
-                                        log_prob = 0.0
-
-                                    # Store complete fixed function and its log prob
-                                    processed_solutions.append(generated_code)
-                                    solution_log_probs.append(log_prob)
-
-                    # Try running tests on raw response first
+                    # Run tests
                     test_env = create_test_env()
                     if try_run_tests(response, entry_point, test_code, test_env):
                         correct_samples += 1
                         logging.info("✓ Sample passed all tests on raw response")
                         continue
 
-                    # Try tests on fixed code if available
                     if generated_code:
                         test_env = create_test_env()
                         if try_run_tests(
@@ -444,39 +303,43 @@ def evaluate_model(
             logging.error(f"Unexpected error: {type(e).__name__}: {str(e)}")
             continue
 
-        # Calculate semantic metrics using processed solutions
-        semantic_metrics = {}
-        logging.info(
-            f"\nCalculating semantic metrics for {len(processed_solutions)} solutions"
+        # Calculate semantic metrics using the best available solutions
+        solutions_for_metrics = (
+            processed_solutions if processed_solutions else raw_solutions
         )
+        semantic_metrics = {}
 
-        if processed_solutions:
+        if solutions_for_metrics:
+            logging.info(
+                f"\nCalculating semantic metrics for {len(solutions_for_metrics)} solutions"
+            )
             logging.debug(
                 "Sample solution lengths: "
-                + str([len(sol) for sol in processed_solutions[:3]])
+                + str([len(sol) for sol in solutions_for_metrics[:3]])
                 + "..."
             )
 
-            # Calculate entropy metrics on processed solutions (complete functions)
-            semantic_ids = get_semantic_ids(processed_solutions, entailment_model)
-            logging.info(f"Number of semantic clusters: {len(set(semantic_ids))}")
+            # Calculate entropy metrics
+            semantic_ids = get_semantic_ids(solutions_for_metrics, entailment_model)
+            num_clusters = len(set(semantic_ids))
+            logging.info(f"Number of semantic clusters: {num_clusters}")
 
             semantic_entropy = cluster_assignment_entropy(semantic_ids)
             logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
 
-            logging.info(f"Solution log probs: {solution_log_probs}")
+            if solution_log_probs:
+                pred_entropy = predictive_entropy(solution_log_probs)
+                pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
+                logging.info(f"Predictive entropy: {pred_entropy:.3f}")
+                logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
+            else:
+                pred_entropy = pred_entropy_rao = 0.0
 
-            pred_entropy = predictive_entropy(solution_log_probs)
-            logging.info(f"Predictive entropy: {pred_entropy:.3f}")
-
-            pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
-            logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
-
-            # Calculate entailment for each solution
+            # Calculate alignments
             canonical_alignments = []
             reverse_alignments = []
 
-            for solution in processed_solutions:
+            for solution in solutions_for_metrics:
                 canon_align = context_entails_response(
                     canonical_solution, [solution], entailment_model
                 )
@@ -487,11 +350,6 @@ def evaluate_model(
                 )
                 reverse_alignments.append(rev_align)
 
-                logging.debug(
-                    f"Solution alignment scores - canonical: {canon_align:.3f}, reverse: {rev_align:.3f}"
-                )
-
-            # Calculate average alignments
             canonical_alignment = (
                 sum(canonical_alignments) / len(canonical_alignments)
                 if canonical_alignments
@@ -504,25 +362,19 @@ def evaluate_model(
             )
             bidirectional = (canonical_alignment + reverse_alignment) / 2
 
-            logging.info(
-                f"Average canonical alignment score: {canonical_alignment:.3f}"
-            )
-            logging.info(f"Average reverse alignment score: {reverse_alignment:.3f}")
-            logging.info(f"Average bidirectional alignment score: {bidirectional:.3f}")
-
-            # Store all metrics
             semantic_metrics = {
                 "semantic_entropy": semantic_entropy,
                 "predictive_entropy": pred_entropy,
                 "predictive_entropy_rao": pred_entropy_rao,
-                "num_semantic_clusters": len(set(semantic_ids)),
-                "num_solutions": len(processed_solutions),
+                "num_semantic_clusters": num_clusters,
+                "num_solutions": len(solutions_for_metrics),
                 "num_processed_solutions": len(processed_solutions),
                 "canonical_alignment": canonical_alignment,
                 "reverse_alignment": reverse_alignment,
                 "bidirectional_alignment": bidirectional,
             }
 
+        # Record results
         pass_at_k = calculate_pass_at_k(n_samples, correct_samples, k)
         results.append(
             {
@@ -533,6 +385,7 @@ def evaluate_model(
             }
         )
 
+        # Log results
         logging.info(f"Problem {idx} Results:")
         logging.info(f"pass@{k}: {pass_at_k:.2f}")
         if semantic_metrics:
@@ -545,7 +398,139 @@ def evaluate_model(
             )
 
     # Calculate aggregate metrics
-    aggregate_metrics = {
+    aggregate_metrics = calculate_aggregate_metrics(results)
+    return aggregate_metrics, results, error_tracker.get_total_stats()
+
+
+def extract_and_fix_function(code, entry_point):
+    """Helper function to extract and fix a function definition"""
+    try:
+        # Try AST parsing
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == entry_point:
+                end = node.end_lineno
+                return "\n".join(code.split("\n")[:end])
+    except SyntaxError:
+        # Fallback: manual parsing
+        lines = code.split("\n")
+        result = []
+        in_docstring = False
+        docstring_delim = 0
+
+        for line in lines:
+            stripped = line.strip()
+            if '"""' in line or "'''" in line:
+                docstring_delim += line.count('"""') + line.count("'''")
+                in_docstring = docstring_delim % 2 != 0
+            if (
+                not in_docstring
+                and stripped
+                and not (
+                    line[0].isspace()
+                    or stripped.startswith(
+                        ("def", "return", "#", '"', "'", "assert", "test_", "Test")
+                    )
+                    or ">>>" in line
+                )
+            ):
+                break
+            result.append(line)
+
+        code = "\n".join(result)
+
+        # Fix missing syntax elements
+        if code and not code.strip().endswith(":"):
+            if ":" not in code:
+                code += ":"
+        if code and "\n" not in code:
+            code += "\n    pass"
+
+        # Fix indentation
+        if code:
+            lines = code.split("\n")
+            fixed_lines = []
+            base_indent = None
+            for line in lines:
+                if line.strip():
+                    if base_indent is None and line.startswith("def"):
+                        base_indent = len(line) - len(line.lstrip())
+                    if base_indent is not None:
+                        stripped = (
+                            line[base_indent:]
+                            if line.startswith(" " * base_indent)
+                            else line
+                        )
+                        fixed_lines.append(
+                            "    " + stripped
+                            if stripped.strip() and not stripped.startswith("def")
+                            else stripped
+                        )
+            return "\n".join(fixed_lines)
+
+    return code
+
+
+def calculate_implementation_log_prob(
+    implementation, full_response, generated_ids, scores, tokenizer, batch_idx
+):
+    """Helper function to calculate log probability for implementation tokens"""
+    impl_tokens = tokenizer.encode(implementation, add_special_tokens=False)
+    full_tokens = tokenizer.encode(full_response, add_special_tokens=False)
+
+    # Find implementation start in full sequence
+    impl_start_idx = -1
+    for i in range(len(full_tokens) - len(impl_tokens) + 1):
+        if full_tokens[i : i + len(impl_tokens)] == impl_tokens:
+            impl_start_idx = i
+            break
+
+    log_prob = 0
+    sequence_length = 0
+    non_pad_indices = (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
+
+    if len(non_pad_indices) > 0 and impl_start_idx != -1:
+        start_idx = non_pad_indices[0].item()
+
+        for step, score in enumerate(scores):
+            if isinstance(score, tuple):
+                score = score[0]
+            step_log_probs = torch.log_softmax(score, dim=-1)
+
+            token_idx = step + start_idx + 1
+            if token_idx >= impl_start_idx and token_idx < impl_start_idx + len(
+                impl_tokens
+            ):
+                token = generated_ids[token_idx]
+                if token == tokenizer.pad_token_id:
+                    continue
+
+                log_prob_step = step_log_probs[batch_idx, token].item()
+
+                if token in [
+                    tokenizer.convert_tokens_to_ids(t)
+                    for t in ["return", "while", "if", "for"]
+                ]:
+                    log_prob_step *= 1.2
+
+                if not np.isfinite(log_prob_step):
+                    log_prob_step = -10.0
+
+                log_prob += log_prob_step
+                sequence_length += 1
+
+        if sequence_length > 0:
+            log_prob = log_prob / sequence_length
+            log_prob = np.clip(log_prob, -10.0, 0.0)
+        else:
+            log_prob = 0.0
+
+    return log_prob
+
+
+def calculate_aggregate_metrics(results):
+    """Helper function to calculate aggregate metrics across all problems"""
+    return {
         "mean_pass_at_k": np.mean([r["pass_at_k"] for r in results]),
         "mean_semantic_entropy": np.mean(
             [
@@ -576,8 +561,6 @@ def evaluate_model(
             ]
         ),
     }
-
-    return aggregate_metrics, results, error_tracker.get_total_stats()
 
 
 def create_test_env():
