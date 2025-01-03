@@ -169,7 +169,10 @@ class EntailmentDeberta(BaseEntailment):
         }
 
 
+### Code Entailment Model ###
 class CodeAwareDeberta(BaseEntailment):
+    """Enhanced DeBERTa with code-specific preprocessing and tuned thresholds."""
+
     def __init__(self, device="cuda"):
         self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-base")
         self.device = device
@@ -178,68 +181,52 @@ class CodeAwareDeberta(BaseEntailment):
         ).to(self.device)
 
     def normalize_code(self, code: str) -> str:
+        """Normalize code for more consistent comparison."""
+        # Remove comments
         code = re.sub(r"#.*$", "", code, flags=re.MULTILINE)
-        lines = code.split("\n")
-        normalized_lines = []
-        for line in lines:
-            leading_space = len(line) - len(line.lstrip())
-            normalized = " ".join(line[leading_space:].split())
-            normalized_lines.append(" " * leading_space + normalized)
 
-        code = "\n".join(normalized_lines)
+        # Normalize whitespace
+        code = re.sub(r"\s+", " ", code)
+
+        # Remove trailing/leading whitespace
+        code = code.strip()
+
+        # Normalize variable names to reduce superficial differences
         var_pattern = r"\b[a-zA-Z_][a-zA-Z0-9_]*\b"
         vars_found = set(re.findall(var_pattern, code))
-        vars_sorted = sorted(vars_found, key=len, reverse=True)
 
         normalized = code
-        reserved = {
-            "def",
-            "class",
-            "return",
-            "if",
-            "else",
-            "for",
-            "while",
-            "import",
-            "from",
-            "as",
-        }
-        for idx, var in enumerate(vars_sorted):
-            if var not in reserved:
-                normalized = re.sub(
-                    r"\b" + re.escape(var) + r"\b", f"var_{idx}", normalized
-                )
+        for idx, var in enumerate(sorted(vars_found)):
+            normalized = re.sub(
+                r"\b" + re.escape(var) + r"\b", f"var_{idx}", normalized
+            )
 
         return normalized
 
     def check_implication(
-        self, text1: str, text2: str, example=None
+        self, text1: str, text2: str, *args, **kwargs
     ) -> Dict[str, float]:
+        """Check entailment between two code snippets with code-aware preprocessing."""
+        # Normalize both code snippets
         norm_text1 = self.normalize_code(text1)
         norm_text2 = self.normalize_code(text2)
 
+        logging.debug(f"Normalized text1: {norm_text1}")
+        logging.debug(f"Normalized text2: {norm_text2}")
+
+        # Use DeBERTa for the actual entailment check
         inputs = self.tokenizer(
-            norm_text1,
-            norm_text2,
-            padding=True,
-            truncation=True,
-            max_length=512,
-            return_tensors="pt",
+            norm_text1, norm_text2, padding=True, truncation=True, return_tensors="pt"
         ).to(self.device)
 
         with torch.no_grad():
             outputs = self.model(**inputs)
-            logits = outputs.logits * 1.2  # Scale logits
+            logits = outputs.logits
             probs = F.softmax(logits, dim=1)[0]
 
-            result = {
+            # Return raw probabilities for use in semantic comparison
+            return {
                 "contradiction": probs[0].item(),
                 "neutral": probs[1].item(),
                 "entailment": probs[2].item(),
             }
-
-            logging.debug(
-                f"Normalized code comparison:\nText1:\n{norm_text1}\nText2:\n{norm_text2}"
-            )
-            logging.debug(f"Probabilities: {result}")
-            return result
