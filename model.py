@@ -211,8 +211,8 @@ class CodeAwareDeberta(BaseEntailment):
         norm_text1 = self.normalize_code(text1)
         norm_text2 = self.normalize_code(text2)
 
-        logging.debug(f"Normalized text1: {norm_text1}")
-        logging.debug(f"Normalized text2: {norm_text2}")
+        logging.info(f"Normalized text1: {norm_text1}")
+        logging.info(f"Normalized text2: {norm_text2}")
 
         # Use DeBERTa for the actual entailment check
         inputs = self.tokenizer(
