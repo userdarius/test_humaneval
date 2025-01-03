@@ -22,7 +22,7 @@ def context_entails_response(context, responses, model):
     return np.mean(all_scores)
 
 
-def get_semantic_ids(strings_list, model, strict_entailment=True, example=None):
+def get_semantic_ids(strings_list, model, strict_entailment=False, example=None):
     logging.info(f"\nCalculating semantic IDs for {len(strings_list)} solutions")
     logging.info(f"Strict entailment mode: {strict_entailment}")
 
