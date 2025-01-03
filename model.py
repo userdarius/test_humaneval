@@ -173,14 +173,12 @@ class EntailmentDeberta(BaseEntailment):
 class CodeAwareDeberta(BaseEntailment):
     """Enhanced DeBERTa with code-specific preprocessing and tuned thresholds."""
 
-    def __init__(self, devices: Optional[List[str]] = None):
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            "microsoft/deberta-v2-xlarge-mnli"
-        )
+    def __init__(self, device="cuda"):
+        self.tokenizer = AutoTokenizer.from_pretrained("microsoft/deberta-base")
+        self.device = device
         self.model = AutoModelForSequenceClassification.from_pretrained(
-            "microsoft/deberta-v2-xlarge-mnli",
-            torch_dtype=torch.float16,
-        )
+            "microsoft/deberta-v2-xlarge-mnli"
+        ).to(self.device)
 
         if devices is None:
             devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
