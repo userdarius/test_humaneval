@@ -2,6 +2,7 @@ import numpy as np
 import logging
 import torch
 
+
 def context_entails_response(context, responses, model):
     """
     Returns a score between 0 and 1 representing how strongly the context entails the responses.
@@ -11,14 +12,15 @@ def context_entails_response(context, responses, model):
     for response in responses:
         probs = model.check_implication(context, response)
         score = (
-            -0.5 * probs["contradiction"]  # Penalize contradictions
-            + 0.2 * probs["neutral"]       # Less credit for neutral
-            + 1.0 * probs["entailment"]    # Full credit for entailment
+            -1 * probs["contradiction"]  # Penalize contradictions
+            + 0 * probs["neutral"]  # no credit for neutral
+            + 0.9 * probs["entailment"]  # slightly reduced credit for entailment
         )
         # Clip to [0,1] range after applying weights
         score = np.clip(score, 0, 1)
         all_scores.append(score)
     return np.mean(all_scores)
+
 
 def get_semantic_ids(strings_list, model, strict_entailment=False, example=None):
     logging.info(f"\nCalculating semantic IDs for {len(strings_list)} solutions")
@@ -29,25 +31,42 @@ def get_semantic_ids(strings_list, model, strict_entailment=False, example=None)
         return []
 
     def are_equivalent(text1, text2):
-        probs_1_to_2 = model.check_implication(text1, text2)
-        probs_2_to_1 = model.check_implication(text2, text1)
-        
-        # Stricter thresholds
-        entailment_threshold = 0.8
-        contradiction_threshold = 0.2
-        neutral_threshold = 0.5
-        
-        # Require bidirectional entailment and low contradiction
-        is_equivalent = (
-            probs_1_to_2["entailment"] > entailment_threshold
-            and probs_2_to_1["entailment"] > entailment_threshold
-            and probs_1_to_2["contradiction"] < contradiction_threshold
-            and probs_2_to_1["contradiction"] < contradiction_threshold
-            and probs_1_to_2["neutral"] < neutral_threshold
-            and probs_2_to_1["neutral"] < neutral_threshold
-        )
-        
-        return is_equivalent
+        try:
+            # Get probabilities for bidirectional entailment
+            probs_1_to_2 = model.check_implication(text1, text2, example=example)
+            probs_2_to_1 = model.check_implication(text2, text1, example=example)
+
+            logging.debug(
+                f"Bidirectional probabilities: {probs_1_to_2} -> {probs_2_to_1}"
+            )
+
+            # Set thresholds for equivalence
+            entailment_threshold = 0.7  # Minimum entailment probability
+            contradiction_threshold = 0.3  # Maximum contradiction probability
+
+            if strict_entailment:
+                # Strict equivalence: both directions must have high entailment
+                result = (
+                    probs_1_to_2["entailment"] > entailment_threshold
+                    and probs_2_to_1["entailment"] > entailment_threshold
+                )
+            else:
+                # Relaxed equivalence: no contradiction and reasonable entailment
+                result = (
+                    probs_1_to_2["contradiction"] < contradiction_threshold
+                    and probs_2_to_1["contradiction"] < contradiction_threshold
+                    and (
+                        probs_1_to_2["entailment"] > entailment_threshold
+                        or probs_2_to_1["entailment"] > entailment_threshold
+                    )
+                )
+
+            logging.debug(f"Equivalence result: {result}")
+            return result
+
+        except Exception as e:
+            logging.error(f"Error in semantic comparison: {e}")
+            return False
 
     semantic_set_ids = [-1] * len(strings_list)
     next_id = 0
@@ -69,7 +88,6 @@ def get_semantic_ids(strings_list, model, strict_entailment=False, example=None)
     logging.info(f"Final semantic ID distribution: {id_counts}")
 
     return semantic_set_ids
-
 
 
 def logsumexp_by_id(semantic_ids, log_likelihoods, agg="sum_normalized"):
