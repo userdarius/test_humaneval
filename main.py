@@ -15,7 +15,7 @@ import statistics
 import numpy as np
 from dataclasses import dataclass, asdict
 from collections import defaultdict
-from model import CodeEntailment
+from model import CodeAwareDeberta
 from scores import (
     get_semantic_ids,
     cluster_assignment_entropy,
@@ -738,7 +738,7 @@ def main():
 
     # Load entailment model
     logging.info("Loading entailment model...")
-    entailment_model = CodeEntailment()
+    entailment_model = CodeAwareDeberta()
 
     # No need to manually move model to device since we're using device_map="auto"
     # The model will be automatically placed on available GPUs
