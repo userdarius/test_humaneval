@@ -180,19 +180,6 @@ class CodeAwareDeberta(BaseEntailment):
             "microsoft/deberta-v2-xlarge-mnli"
         ).to(self.device)
 
-        if devices is None:
-            devices = [f"cuda:{i}" for i in range(torch.cuda.device_count())]
-
-        if len(devices) > 1:
-            self.model = torch.nn.DataParallel(
-                self.model, device_ids=range(len(devices))
-            )
-            self.device = devices[0]
-        else:
-            self.device = devices[0]
-
-        self.model = self.model.to(self.device)
-
     def normalize_code(self, code: str) -> str:
         """Normalize code for more consistent comparison."""
         # Remove comments
