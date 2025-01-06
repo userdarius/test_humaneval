@@ -1,21 +1,29 @@
+import os
+import sys
+from datetime import datetime
+import logging
 import torch
-from data import get_dataset
-from model import load_model_and_tokenizer
 from tqdm import tqdm
-import ast
-import inspect
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+import pandas as pd
+import json
+from dataclasses import dataclass, asdict
+from collections import defaultdict
+from typing import List, Optional, Union, Dict, Tuple, Any
+import statistics
+import math
+import gc
 import contextlib
 import io
 import timeout_decorator
-import json
-from datetime import datetime
-from typing import List, Optional, Union, Dict, Tuple, Any
-import math
-import statistics
-import numpy as np
-from dataclasses import dataclass, asdict
-from collections import defaultdict
-from model import CodeAwareDeberta
+import ast
+from model import (
+    CodeAwareDeberta,
+    load_model_and_tokenizer,
+)
+from data import get_dataset
 from scores import (
     get_semantic_ids,
     cluster_assignment_entropy,
@@ -23,66 +31,234 @@ from scores import (
     predictive_entropy_rao,
     context_entails_response,
 )
-import logging
-import gc
+
+# Create results directory
+RESULTS_DIR = "results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
 
 
-logging.basicConfig(level=logging.INFO)
+def create_experiment_dir():
+    """Create a timestamped directory for the current experiment"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_dir = os.path.join(RESULTS_DIR, f"humaneval_{timestamp}")
+    os.makedirs(experiment_dir, exist_ok=True)
+    return experiment_dir
 
 
-@dataclass
-class ErrorStats:
-    """Statistics for different types of errors encountered during final test attempts."""
+class ResultsVisualizer:
+    def __init__(self, results_list, experiment_dir):
+        """Initialize with a list of result dictionaries and experiment directory"""
+        # Clean results by removing non-numeric and nested data
+        cleaned_results = []
+        for result in results_list:
+            clean_result = {
+                "problem_id": result["problem_id"],
+                "pass_at_k": result["pass_at_k"],
+            }
+            # Add semantic metrics if they exist
+            if result["semantic_metrics"]:
+                clean_result.update(result["semantic_metrics"])
+            # Add error stats
+            for error_type, count in result["error_stats"].items():
+                if error_type != "total_samples":
+                    clean_result[f"error_{error_type}"] = count
+            cleaned_results.append(clean_result)
 
-    syntax_errors: int = 0
-    type_errors: int = 0
-    assertion_errors: int = 0
-    timeout_errors: int = 0
-    runtime_errors: int = 0
-    indentation_errors: int = 0
-    total_samples: int = 0
+        self.results = pd.DataFrame(cleaned_results)
+        self.experiment_dir = experiment_dir
+
+    def plot_metrics_over_problems(self):
+        """Plot all metrics across problems"""
+        metrics = [col for col in self.results.columns if col != "problem_id"]
+        plt.figure(figsize=(12, 6))
+        for metric in metrics:
+            plt.plot(
+                range(len(self.results)), self.results[metric], label=metric, marker="o"
+            )
+        plt.title("Metrics across Problems")
+        plt.xlabel("Problem Index")
+        plt.ylabel("Value")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "metrics_across_problems.png"))
+        plt.close()
+
+    def plot_alignment_triangle(self):
+        """Create triangular visualization for alignment relationships"""
+        plt.figure(figsize=(10, 8))
+        plt.scatter(
+            self.results["canonical_alignment"],
+            self.results["reverse_alignment"],
+            c=self.results["bidirectional_alignment"],
+            cmap="viridis",
+            alpha=0.6,
+        )
+        plt.colorbar(label="Bidirectional Alignment Score")
+        max_val = max(
+            self.results["canonical_alignment"].max(),
+            self.results["reverse_alignment"].max(),
+        )
+        plt.plot([0, max_val], [0, max_val], "r--", alpha=0.5, label="Perfect Balance")
+        plt.xlabel("Canonical Alignment")
+        plt.ylabel("Reverse Alignment")
+        plt.title("Alignment Triangle Visualization")
+        plt.legend()
+        plt.savefig(os.path.join(self.experiment_dir, "alignment_triangle.png"))
+        plt.close()
+
+    def plot_entropy_landscape(self):
+        """Create 2D entropy landscape visualization"""
+        plt.figure(figsize=(12, 8))
+        self.results["cluster_entropy"] = -np.log2(
+            self.results["largest_cluster_size"] / self.results["num_semantic_clusters"]
+        )
+
+        ax = plt.axes(projection="3d")
+        scatter = ax.scatter(
+            self.results["semantic_entropy"],
+            self.results["predictive_entropy"],
+            self.results["cluster_entropy"],
+            c=self.results["pass_at_k"],
+            cmap="coolwarm",
+            alpha=0.6,
+        )
+        plt.colorbar(scatter, label="Pass@k Score")
+        ax.set_xlabel("Semantic Entropy")
+        ax.set_ylabel("Predictive Entropy")
+        ax.set_zlabel("Cluster Entropy")
+        plt.title("Entropy Landscape")
+        plt.savefig(os.path.join(self.experiment_dir, "entropy_landscape.png"))
+        plt.close()
+
+    def plot_error_distributions(self):
+        """Plot distribution of different error types"""
+        error_columns = [
+            col for col in self.results.columns if col.startswith("error_")
+        ]
+        if error_columns:
+            plt.figure(figsize=(10, 6))
+            error_data = self.results[error_columns].sum()
+            error_data.plot(kind="bar")
+            plt.title("Distribution of Error Types")
+            plt.xlabel("Error Type")
+            plt.ylabel("Count")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.experiment_dir, "error_distributions.png"))
+            plt.close()
+
+    def plot_solution_quality_matrix(self):
+        """Create correlation matrix for solution quality metrics"""
+        metrics = [
+            "semantic_entropy",
+            "predictive_entropy",
+            "canonical_alignment",
+            "bidirectional_alignment",
+            "pass_at_k",
+        ]
+
+        corr_matrix = self.results[metrics].corr()
+        plt.figure(figsize=(10, 8))
+        mask = np.triu(np.ones_like(corr_matrix), k=1)
+        sns.heatmap(
+            corr_matrix,
+            mask=mask,
+            annot=True,
+            cmap="RdYlBu",
+            center=0,
+            vmin=-1,
+            vmax=1,
+            square=True,
+        )
+        plt.title("Solution Quality Correlation Matrix")
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "solution_quality_matrix.png"))
+        plt.close()
+
+    def generate_semantic_diversity_report(self):
+        """Generate detailed report on semantic diversity metrics"""
+        try:
+            metrics = {
+                "semantic_clusters_stats": {
+                    "mean": float(self.results["num_semantic_clusters"].mean()),
+                    "std": float(self.results["num_semantic_clusters"].std()),
+                    "max": int(self.results["num_semantic_clusters"].max()),
+                    "min": int(self.results["num_semantic_clusters"].min()),
+                },
+                "diversity_vs_performance": float(
+                    np.corrcoef(
+                        self.results["semantic_entropy"], self.results["pass_at_k"]
+                    )[0, 1]
+                ),
+                "entropy_correlations": {
+                    "semantic_vs_predictive": float(
+                        np.corrcoef(
+                            self.results["semantic_entropy"],
+                            self.results["predictive_entropy"],
+                        )[0, 1]
+                    )
+                },
+            }
+
+            report_file = os.path.join(
+                self.experiment_dir, "semantic_diversity_report.json"
+            )
+            with open(report_file, "w") as f:
+                json.dump(metrics, f, indent=2)
+
+            return metrics
+
+        except Exception as e:
+            logging.error(f"Error generating semantic diversity report: {str(e)}")
+            return {}
 
 
-class ErrorTracker:
-    """Tracks errors from final test attempts across all problems in the dataset."""
+def setup_logging(experiment_dir):
+    """Configure logging with detailed formatting"""
+    log_filename = os.path.join(experiment_dir, "humaneval.log")
 
-    def __init__(self):
-        self.problem_errors: Dict[int, ErrorStats] = defaultdict(ErrorStats)
-        self.total_errors = ErrorStats()
+    file_formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(filename)s:%(lineno)d | %(funcName)s | %(message)s"
+    )
+    console_formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s")
 
-    def add_error(self, problem_idx: int, error_type: str):
-        """Record an error for a specific problem."""
-        if error_type == "SyntaxError" or error_type == "InvalidSyntax":
-            self.problem_errors[problem_idx].syntax_errors += 1
-            self.total_errors.syntax_errors += 1
-        elif error_type == "TypeError":
-            self.problem_errors[problem_idx].type_errors += 1
-            self.total_errors.type_errors += 1
-        elif error_type == "AssertionError":
-            self.problem_errors[problem_idx].assertion_errors += 1
-            self.total_errors.assertion_errors += 1
-        elif error_type == "TimeoutError":
-            self.problem_errors[problem_idx].timeout_errors += 1
-            self.total_errors.timeout_errors += 1
-        elif error_type == "IndentationError":
-            self.problem_errors[problem_idx].indentation_errors += 1
-            self.total_errors.indentation_errors += 1
-        else:
-            self.problem_errors[problem_idx].runtime_errors += 1
-            self.total_errors.runtime_errors += 1
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(file_formatter)
 
-    def increment_total(self, problem_idx: int):
-        """Increment the total number of samples for a problem."""
-        self.problem_errors[problem_idx].total_samples += 1
-        self.total_errors.total_samples += 1
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
 
-    def get_problem_stats(self, problem_idx: int) -> dict:
-        """Get error statistics for a specific problem."""
-        return asdict(self.problem_errors[problem_idx])
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
 
-    def get_total_stats(self) -> dict:
-        """Get overall error statistics."""
-        return asdict(self.total_errors)
+    logging.info(f"Logging initialized. Log file: {log_filename}")
+    return log_filename
+
+
+@timeout_decorator.timeout(10)  # 5 second timeout for execution
+def execute_test_case(func_obj, test_case, test_env):
+    """Execute a single test case and return True if it passes."""
+    try:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exec(test_case, test_env)
+        return True
+    except AssertionError as e:
+        logging.error(f"Test assertion failed: {str(e)}")
+        return False
+    except TypeError as e:
+        logging.error(f"Type error in implementation: {str(e)}")
+        return False
+    except timeout_decorator.TimeoutError:
+        logging.error("Test execution timed out - likely infinite loop detected")
+        return False
+    except Exception as e:
+        logging.error(f"Error executing test case: {type(e).__name__}: {str(e)}")
+        return False
 
 
 def extract_function_body(code_string: str) -> Optional[str]:
@@ -166,34 +342,17 @@ def extract_function_body(code_string: str) -> Optional[str]:
         return None
 
 
-@timeout_decorator.timeout(10)  # 5 second timeout for execution
-def execute_test_case(func_obj, test_case, test_env):
-    """Execute a single test case and return True if it passes."""
-    try:
-        stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
-            exec(test_case, test_env)
-        return True
-    except AssertionError as e:
-        logging.error(f"Test assertion failed: {str(e)}")
-        return False
-    except TypeError as e:
-        logging.error(f"Type error in implementation: {str(e)}")
-        return False
-    except timeout_decorator.TimeoutError:
-        logging.error("Test execution timed out - likely infinite loop detected")
-        return False
-    except Exception as e:
-        logging.error(f"Error executing test case: {type(e).__name__}: {str(e)}")
-        return False
-
-
 def evaluate_model(
-    model, tokenizer, dataset, num_problems, n_samples, k, entailment_model
+    model,
+    tokenizer,
+    dataset,
+    num_problems,
+    n_samples,
+    k,
+    entailment_model,
+    experiment_dir,
 ):
-    """
-    Evaluate the model on the dataset with error tracking and semantic uncertainty metrics.
-    """
+    """Enhanced evaluation function with visualization and metrics"""
     results = []
     error_tracker = ErrorTracker()
     device = next(model.parameters()).device
@@ -211,12 +370,12 @@ def evaluate_model(
         test_code = problem["test_code"]
         correct_samples = 0
 
-        # Store all solutions (both raw and processed) and their scores
         raw_solutions = []
         processed_solutions = []
         solution_log_probs = []
 
         try:
+            # Generate solutions
             encoded_input = tokenizer(question, return_tensors="pt", truncation=True)
             input_ids = encoded_input["input_ids"].to(device)
             attention_mask = encoded_input.get("attention_mask", None)
@@ -239,237 +398,202 @@ def evaluate_model(
                 return_legacy_cache=False,
             )
 
+            # Process outputs and calculate metrics
             if hasattr(outputs, "scores") and outputs.scores:
-                scores = outputs.scores
-                # For each sequence in the batch
                 for batch_idx in range(len(outputs.sequences)):
                     error_tracker.increment_total(idx)
                     generated_ids = outputs.sequences[batch_idx]
-                    log_prob = 0
-                    sequence_length = 0
-
-                    # Get indices of non-padding tokens
-                    non_pad_indices = (
-                        (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
-                    )
-                    if len(non_pad_indices) > 0:
-                        start_idx = non_pad_indices[0].item()
-
-                        for step, score in enumerate(scores):
-                            if isinstance(score, tuple):
-                                score = score[0]
-                            step_log_probs = torch.log_softmax(score, dim=-1)
-
-                            # Only include if we're past the prompt
-                            if step + start_idx + 1 < len(generated_ids):
-                                token = generated_ids[step + start_idx + 1]
-
-                                # Skip padding tokens
-                                if token == tokenizer.pad_token_id:
-                                    continue
-
-                                # Get probability for this specific sequence's token
-                                log_prob_step = step_log_probs[batch_idx, token].item()
-
-                                # Weight important tokens more heavily
-                                if token in [
-                                    tokenizer.convert_tokens_to_ids(t)
-                                    for t in ["return", "while", "if", "for"]
-                                ]:
-                                    log_prob_step *= (
-                                        1.2  # Boost probability for structural tokens
-                                    )
-
-                                if not np.isfinite(log_prob_step):
-                                    log_prob_step = -10.0
-
-                                log_prob += log_prob_step
-                                sequence_length += 1
-
-                        if sequence_length > 0:
-                            log_prob = log_prob / sequence_length
-                            # Remove this scaling factor as it's reducing the differences
-                            # log_prob = log_prob / 5.0
-
-                        # Use a wider range for clipping
-                        log_prob = np.clip(log_prob, -10.0, 0.0)
-                    else:
-                        log_prob = 0.0
-
                     response = tokenizer.decode(generated_ids, skip_special_tokens=True)
                     raw_solutions.append(response)
+
+                    # Calculate log probabilities
+                    log_prob = calculate_sequence_log_prob(
+                        generated_ids, outputs.scores, tokenizer, batch_idx
+                    )
                     solution_log_probs.append(log_prob)
 
-                    # Extract and fix the function
-                    generated_code = ""
-                    if "def " + entry_point in response:
-                        start = response.find("def " + entry_point)
-                        generated_code = response[start:]
-                        generated_code = extract_and_fix_function(
-                            generated_code, entry_point
-                        )
-
-                        if generated_code:
-                            processed_solutions.append(generated_code)
-                            logging.info(
-                                f"Generated code after MAIN extraction: {generated_code}"
-                            )
-
-                    # Run tests
-                    test_env = create_test_env()
-                    if try_run_tests(response, entry_point, test_code, test_env):
+                    # Process and test solutions
+                    if process_and_test_solution(
+                        response, entry_point, test_code, error_tracker, idx
+                    ):
                         correct_samples += 1
-                        logging.info("✓ Sample passed all tests on raw response")
                         continue
 
-                    if generated_code:
-                        test_env = create_test_env()
-                        if try_run_tests(
-                            generated_code,
-                            entry_point,
-                            test_code,
-                            test_env,
-                            error_tracker,
-                            idx,
-                        ):
-                            correct_samples += 1
-                            logging.info("✓ Sample passed all tests after fixing")
-                            continue
+            # Calculate semantic metrics
+            semantic_metrics = calculate_semantic_metrics(
+                processed_solutions,
+                canonical_solution,
+                solution_log_probs,
+                entailment_model,
+            )
 
-                    logging.info("✗ Sample failed all test attempts")
+            # Calculate pass@k
+            pass_at_k = calculate_pass_at_k(n_samples, correct_samples, k)
+
+            results.append(
+                {
+                    "problem_id": idx,
+                    "pass_at_k": pass_at_k,
+                    "error_stats": error_tracker.get_problem_stats(idx),
+                    "semantic_metrics": semantic_metrics,
+                }
+            )
 
         except Exception as e:
             error_tracker.add_error(idx, type(e).__name__)
             logging.error(f"Unexpected error: {type(e).__name__}: {str(e)}")
             continue
 
-        # Calculate semantic metrics using the best available solutions
-        semantic_metrics = {}
-
-        if processed_solutions:
-            logging.info(f"Canonical solution: {canonical_solution}")
-            extracted_solution_bodies = []
-
-            for sol in processed_solutions:
-                implementation = extract_function_body(sol)
-                logging.info(
-                    f"Processed solution for semantic analysis: {implementation}"
-                )
-                if implementation:
-                    extracted_solution_bodies.append(implementation)
-                else:
-                    logging.warning(f"No implementation found for solution: {sol}")
-
-            logging.info(
-                f"\nCalculating semantic metrics for {len(extracted_solution_bodies)} solutions"
-            )
-
-            # Calculate entropy metrics
-            semantic_ids = get_semantic_ids(extracted_solution_bodies, entailment_model)
-            num_clusters = len(set(semantic_ids))
-            logging.info(f"Number of semantic clusters: {num_clusters}")
-
-            semantic_entropy = cluster_assignment_entropy(semantic_ids)
-            logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
-
-            if extracted_solution_bodies:
-                # clear cache
-                torch.cuda.empty_cache()
-                gc.collect()
-                logging.info(
-                    f"Calculating alignments for {len(extracted_solution_bodies)} solutions"
-                )
-
-                # Calculate alignments
-                canonical_alignments = []
-                reverse_alignments = []
-
-                for solution in extracted_solution_bodies:
-                    # Measure if canonical solution entails the generated solution
-                    canon_align = context_entails_response(
-                        canonical_solution, [solution], entailment_model
-                    )
-                    canonical_alignments.append(canon_align)
-
-                    # Measure if generated solution entails the canonical solution
-                    rev_align = context_entails_response(
-                        solution, [canonical_solution], entailment_model
-                    )
-                    reverse_alignments.append(rev_align)
-
-                    logging.debug(
-                        f"Solution alignment scores - canonical: {canon_align:.3f}, reverse: {rev_align:.3f}"
-                    )
-
-                # Calculate average alignments
-                canonical_alignment = sum(canonical_alignments) / len(
-                    canonical_alignments
-                )
-                reverse_alignment = sum(reverse_alignments) / len(reverse_alignments)
-                bidirectional = (canonical_alignment + reverse_alignment) / 2
-
-                logging.info(
-                    f"Average canonical alignment score: {canonical_alignment:.3f}"
-                )
-                logging.info(
-                    f"Average reverse alignment score: {reverse_alignment:.3f}"
-                )
-                logging.info(
-                    f"Average bidirectional alignment score: {bidirectional:.3f}"
-                )
-            else:
-                logging.warning(
-                    "No valid solutions available for alignment calculation"
-                )
-                canonical_alignment = 0.0
-                reverse_alignment = 0.0
-                bidirectional = 0.0
-
-            logging.info(f"Solution log probs: {solution_log_probs}")
-            pred_entropy = predictive_entropy(solution_log_probs)
-            pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
-            logging.info(f"Predictive entropy: {pred_entropy:.3f}")
-            logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
-
-            # Store all metrics
-            semantic_metrics = {
-                "semantic_entropy": semantic_entropy,
-                "predictive_entropy": pred_entropy,
-                "predictive_entropy_rao": pred_entropy_rao,
-                "num_semantic_clusters": num_clusters,
-                "num_solutions": len(processed_solutions),
-                "num_extracted_solution_bodies": len(extracted_solution_bodies),
-                "canonical_alignment": canonical_alignment,
-                "reverse_alignment": reverse_alignment,
-                "bidirectional_alignment": bidirectional,
-            }
-
-        # Record results
-        pass_at_k = calculate_pass_at_k(n_samples, correct_samples, k)
-        results.append(
-            {
-                "problem_id": idx,
-                "pass_at_k": pass_at_k,
-                "error_stats": error_tracker.get_problem_stats(idx),
-                "semantic_metrics": semantic_metrics,
-            }
-        )
-
-        # Log results
-        logging.info(f"Problem {idx} Results:")
-        logging.info(f"pass@{k}: {pass_at_k:.2f}")
-        if semantic_metrics:
-            logging.info(f"Semantic metrics: {semantic_metrics}")
-            logging.info(
-                f"Canonical solution alignment: {semantic_metrics['canonical_alignment']:.2f}"
-            )
-            logging.info(
-                f"Bidirectional alignment: {semantic_metrics['bidirectional_alignment']:.2f}"
-            )
+    # Generate visualizations
+    visualizer = ResultsVisualizer(results, experiment_dir)
+    visualizer.plot_metrics_over_problems()
+    visualizer.plot_error_distributions()
+    visualizer.plot_alignment_triangle()
+    visualizer.plot_entropy_landscape()
+    visualizer.plot_solution_quality_matrix()
+    diversity_metrics = visualizer.generate_semantic_diversity_report()
 
     # Calculate aggregate metrics
     aggregate_metrics = calculate_aggregate_metrics(results)
     return aggregate_metrics, results, error_tracker.get_total_stats()
+
+
+def main():
+    # Create experiment directory and setup logging
+    experiment_dir = create_experiment_dir()
+    log_filename = setup_logging(experiment_dir)
+    logging.info("Starting enhanced HumanEval evaluation")
+
+    try:
+        # Model parameters
+        model_name = "meta-llama/Llama-3.1-8B-Instruct"
+
+        # Load dataset and models
+        logging.info("Loading dataset...")
+        dataset = get_dataset("openai_humaneval", seed=42)
+
+        logging.info("Loading models...")
+        model, tokenizer = load_model_and_tokenizer(model_name)
+        entailment_model = CodeAwareDeberta()
+
+        # Run evaluation
+        aggregate_metrics, detailed_results, error_stats = evaluate_model(
+            model,
+            tokenizer,
+            dataset,
+            num_problems=164,
+            n_samples=5,
+            k=2,
+            entailment_model=entailment_model,
+            experiment_dir=experiment_dir,
+        )
+
+        # Save results
+        results = {
+            "model_name": model_name,
+            "aggregate_metrics": aggregate_metrics,
+            "timestamp": datetime.now().isoformat(),
+            "num_samples": len(dataset),
+            "error_statistics": error_stats,
+            "detailed_results": detailed_results,
+        }
+
+        results_file = os.path.join(experiment_dir, "final_results.json")
+        with open(results_file, "w") as f:
+            json.dump(results, f, indent=2)
+
+        logging.info(f"\nFinal Results:")
+        logging.info(f"Results saved to: {results_file}")
+        logging.info(f"Experiment directory: {experiment_dir}")
+        logging.info(f"Log file: {log_filename}")
+
+        # Print key metrics
+        logging.info("\nKey Metrics:")
+        logging.info(f"Mean pass@k: {aggregate_metrics['mean_pass_at_k']:.2f}")
+        logging.info(
+            f"Mean semantic entropy: {aggregate_metrics['mean_semantic_entropy']:.2f}"
+        )
+        logging.info(
+            f"Mean predictive entropy: {aggregate_metrics['mean_predictive_entropy']:.2f}"
+        )
+        logging.info(
+            f"Mean canonical alignment: {aggregate_metrics['mean_canonical_alignment']:.2f}"
+        )
+        logging.info(f"\nError Statistics:")
+        logging.info(json.dumps(error_stats, indent=2))
+
+    except Exception as e:
+        logging.critical(f"Critical error in main execution: {str(e)}", exc_info=True)
+        raise
+
+
+if __name__ == "__main__":
+    main()
+
+
+def calculate_sequence_log_prob(generated_ids, scores, tokenizer, batch_idx):
+    """Calculate log probability for a generated sequence"""
+    log_prob = 0
+    sequence_length = 0
+
+    non_pad_indices = (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
+    if len(non_pad_indices) > 0:
+        start_idx = non_pad_indices[0].item()
+
+        for step, score in enumerate(scores):
+            if isinstance(score, tuple):
+                score = score[0]
+            step_log_probs = torch.log_softmax(score, dim=-1)
+
+            if step + start_idx + 1 < len(generated_ids):
+                token = generated_ids[step + start_idx + 1]
+
+                if token == tokenizer.pad_token_id:
+                    continue
+
+                log_prob_step = step_log_probs[batch_idx, token].item()
+
+                if token in [
+                    tokenizer.convert_tokens_to_ids(t)
+                    for t in ["return", "while", "if", "for"]
+                ]:
+                    log_prob_step *= 1.2
+
+                if not np.isfinite(log_prob_step):
+                    log_prob_step = -10.0
+
+                log_prob += log_prob_step
+                sequence_length += 1
+
+        if sequence_length > 0:
+            log_prob = log_prob / sequence_length
+            log_prob = np.clip(log_prob, -10.0, 0.0)
+
+    return log_prob
+
+
+def process_and_test_solution(response, entry_point, test_code, error_tracker, idx):
+    """Process and test a generated solution"""
+    # Try running tests on raw response
+    test_env = create_test_env()
+    if try_run_tests(response, entry_point, test_code, test_env):
+        return True
+
+    # Extract and fix function if needed
+    generated_code = ""
+    if "def " + entry_point in response:
+        start = response.find("def " + entry_point)
+        generated_code = response[start:]
+        generated_code = extract_and_fix_function(generated_code, entry_point)
+
+        if generated_code:
+            test_env = create_test_env()
+            if try_run_tests(
+                generated_code, entry_point, test_code, test_env, error_tracker, idx
+            ):
+                return True
+
+    return False
 
 
 def extract_and_fix_function(code, entry_point):
@@ -539,6 +663,73 @@ def extract_and_fix_function(code, entry_point):
             return "\n".join(fixed_lines)
 
     return code
+
+
+def calculate_semantic_metrics(
+    processed_solutions, canonical_solution, solution_log_probs, entailment_model
+):
+    """Calculate semantic metrics for code solutions"""
+    if not processed_solutions:
+        return {}
+
+    try:
+        # Extract implementation bodies
+        solution_bodies = []
+        for sol in processed_solutions:
+            implementation = extract_function_body(sol)
+            if implementation:
+                solution_bodies.append(implementation)
+
+        if not solution_bodies:
+            return {}
+
+        # Calculate semantic clustering
+        semantic_ids = get_semantic_ids(solution_bodies, entailment_model)
+        semantic_cluster_counts = np.bincount(semantic_ids)
+
+        # Calculate entailment scores
+        canonical_alignments = []
+        reverse_alignments = []
+
+        for solution in solution_bodies:
+            canon_align = context_entails_response(
+                canonical_solution, [solution], entailment_model
+            )
+            canonical_alignments.append(canon_align)
+
+            rev_align = context_entails_response(
+                solution, [canonical_solution], entailment_model
+            )
+            reverse_alignments.append(rev_align)
+
+        # Calculate average alignments
+        canonical_alignment = statistics.mean(canonical_alignments)
+        reverse_alignment = statistics.mean(reverse_alignments)
+        bidirectional = (canonical_alignment + reverse_alignment) / 2
+
+        # Calculate additional metrics
+        semantic_diversity = len(set(semantic_ids)) / len(semantic_ids)
+        majority_solution_freq = max(semantic_cluster_counts) / len(semantic_ids)
+
+        return {
+            "semantic_entropy": cluster_assignment_entropy(semantic_ids),
+            "predictive_entropy": predictive_entropy(solution_log_probs),
+            "predictive_entropy_rao": predictive_entropy_rao(solution_log_probs),
+            "num_semantic_clusters": len(set(semantic_ids)),
+            "largest_cluster_size": max(semantic_cluster_counts),
+            "cluster_size_std": np.std(semantic_cluster_counts),
+            "canonical_alignment": canonical_alignment,
+            "reverse_alignment": reverse_alignment,
+            "bidirectional_alignment": bidirectional,
+            "semantic_diversity": semantic_diversity,
+            "majority_solution_frequency": majority_solution_freq,
+            "mean_solution_length": np.mean([len(sol) for sol in solution_bodies]),
+            "solution_length_std": np.std([len(sol) for sol in solution_bodies]),
+        }
+
+    except Exception as e:
+        logging.error(f"Error calculating semantic metrics: {str(e)}")
+        return {}
 
 
 def calculate_implementation_log_prob(
@@ -722,70 +913,3 @@ def calculate_pass_at_k(n_samples: int, n_correct: int, k: int) -> float:
         return 1.0 if n_correct == n_samples else 0.0
 
     return 1.0 - math.comb(n_samples - n_correct, k) / math.comb(n_samples, k)
-
-
-def main():
-    # Model parameters
-    model_name = "meta-llama/Llama-3.1-8B-Instruct"  # need to add HF_TOKEN
-
-    # Load dataset
-    logging.info("Loading dataset...")
-    dataset = get_dataset("openai_humaneval", seed=42)
-
-    # Load model and tokenizer
-    logging.info("Loading model and tokenizer...")
-    model, tokenizer = load_model_and_tokenizer(model_name)
-
-    # Load entailment model
-    logging.info("Loading entailment model...")
-    entailment_model = CodeAwareDeberta()
-
-    # No need to manually move model to device since we're using device_map="auto"
-    # The model will be automatically placed on available GPUs
-
-    # Evaluate
-    logging.info("Starting evaluation...")
-
-    aggregate_metrics, detailed_results, error_stats = evaluate_model(
-        model,
-        tokenizer,
-        dataset,
-        num_problems=164,
-        n_samples=5,
-        k=2,
-        entailment_model=entailment_model,
-    )
-
-    # Print aggregate metrics
-    logging.info("\nFinal Results:")
-    logging.info(f"Mean pass@k: {aggregate_metrics['mean_pass_at_k']:.2f}")
-    logging.info(
-        f"Mean semantic entropy: {aggregate_metrics['mean_semantic_entropy']:.2f}"
-    )
-    logging.info(
-        f"Mean predictive entropy: {aggregate_metrics['mean_predictive_entropy']:.2f}"
-    )
-    logging.info(
-        f"Mean canonical alignment: {aggregate_metrics['mean_canonical_alignment']:.2f}"
-    )
-    logging.info(f"Error Statistics:\n{json.dumps(error_stats, indent=2)}")
-
-    # Save results
-    results = {
-        "model_name": model_name,
-        "aggregate_metrics": aggregate_metrics,
-        "timestamp": datetime.now().isoformat(),
-        "num_samples": len(dataset),
-        "error_statistics": error_stats,
-        "detailed_results": detailed_results,
-    }
-
-    results_file = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(results_file, "w") as f:
-        json.dump(results, f, indent=2)
-
-    logging.info(f"Results saved to {results_file}")
-
-
-if __name__ == "__main__":
-    main()
