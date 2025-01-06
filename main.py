@@ -119,6 +119,205 @@ class ResultsVisualizer:
             plt.savefig(os.path.join(self.experiment_dir, "error_distributions.png"))
             plt.close()
 
+    def plot_alignment_triangle(self):
+        """
+        Create a triangular visualization showing relationships between:
+        - canonical alignment
+        - reverse alignment
+        - bidirectional alignment
+        """
+        plt.figure(figsize=(10, 8))
+        
+        # Create scatter plot
+        plt.scatter(
+            self.results['canonical_alignment'],
+            self.results['reverse_alignment'],
+            c=self.results['bidirectional_alignment'],
+            cmap='viridis',
+            alpha=0.6
+        )
+        
+        # Add colorbar
+        plt.colorbar(label='Bidirectional Alignment Score')
+        
+        # Add diagonal line for perfect alignment
+        max_val = max(
+            self.results['canonical_alignment'].max(),
+            self.results['reverse_alignment'].max()
+        )
+        plt.plot([0, max_val], [0, max_val], 'r--', alpha=0.5, label='Perfect Balance')
+        
+        plt.xlabel('Canonical Alignment')
+        plt.ylabel('Reverse Alignment')
+        plt.title('Alignment Triangle Visualization')
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "alignment_triangle.png"))
+        plt.close()
+
+    def plot_entropy_landscape(self):
+        """
+        Create a 2D landscape plot comparing different entropy metrics:
+        - semantic entropy
+        - predictive entropy
+        - cluster entropy (derived from semantic clustering)
+        """
+        plt.figure(figsize=(12, 8))
+        
+        # Calculate cluster entropy if not present
+        if 'cluster_entropy' not in self.results.columns:
+            self.results['cluster_entropy'] = -np.log2(
+                self.results['largest_cluster_size'] / 
+                self.results['num_semantic_clusters']
+            )
+        
+        # Create 3D scatter plot
+        ax = plt.axes(projection='3d')
+        scatter = ax.scatter(
+            self.results['semantic_entropy'],
+            self.results['predictive_entropy'],
+            self.results['cluster_entropy'],
+            c=self.results['pass_at_k'],
+            cmap='coolwarm',
+            alpha=0.6
+        )
+        
+        plt.colorbar(scatter, label='Pass@k Score')
+        ax.set_xlabel('Semantic Entropy')
+        ax.set_ylabel('Predictive Entropy')
+        ax.set_zlabel('Cluster Entropy')
+        plt.title('Entropy Landscape')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "entropy_landscape.png"))
+        plt.close()
+
+    def plot_alignment_progression(self):
+        """
+        Plot how alignment metrics change across different problem difficulties,
+        sorted by pass@k score
+        """
+        plt.figure(figsize=(12, 6))
+        
+        # Sort by pass@k
+        sorted_idx = self.results['pass_at_k'].sort_values().index
+        
+        # Plot alignment metrics
+        plt.plot(
+            self.results.loc[sorted_idx, 'canonical_alignment'],
+            label='Canonical',
+            marker='o'
+        )
+        plt.plot(
+            self.results.loc[sorted_idx, 'reverse_alignment'],
+            label='Reverse',
+            marker='s'
+        )
+        plt.plot(
+            self.results.loc[sorted_idx, 'bidirectional_alignment'],
+            label='Bidirectional',
+            marker='^'
+        )
+        
+        plt.xlabel('Problems (sorted by difficulty)')
+        plt.ylabel('Alignment Score')
+        plt.title('Alignment Progression Across Problem Difficulty')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "alignment_progression.png"))
+        plt.close()
+
+    def generate_semantic_diversity_report(self):
+        """
+        Generate a detailed report on semantic diversity metrics with robust error handling
+        """
+        try:
+            metrics = {
+                'semantic_clusters_stats': {
+                    'mean': float(self.results['num_semantic_clusters'].mean()),
+                    'std': float(self.results['num_semantic_clusters'].std()),
+                    'max': int(self.results['num_semantic_clusters'].max()),
+                    'min': int(self.results['num_semantic_clusters'].min())
+                },
+                'diversity_vs_performance': float(np.corrcoef(
+                    self.results['semantic_diversity'],
+                    self.results['pass_at_k']
+                )[0,1]),
+                'entropy_correlations': {
+                    'semantic_vs_predictive': float(np.corrcoef(
+                        self.results['semantic_entropy'],
+                        self.results['predictive_entropy']
+                    )[0,1]),
+                    'semantic_vs_cluster': float(np.corrcoef(
+                        self.results['semantic_entropy'],
+                        self.results['cluster_size_std']
+                    )[0,1])
+                },
+                'alignment_balance': float(abs(
+                    self.results['canonical_alignment'].mean() -
+                    self.results['reverse_alignment'].mean()
+                ))
+            }
+            
+            # Ensure all values are JSON serializable
+            metrics = convert_to_native_types(metrics)
+            
+            # Save report with error handling
+            report_file = os.path.join(self.experiment_dir, "semantic_diversity_report.json")
+            try:
+                with open(report_file, 'w') as f:
+                    json.dump(metrics, f, indent=2)
+            except TypeError as e:
+                logging.error(f"JSON serialization error in diversity report: {str(e)}")
+                # Attempt to identify problematic values
+                for key, value in metrics.items():
+                    try:
+                        json.dumps({key: value})
+                    except TypeError:
+                        logging.error(f"Non-serializable value in key '{key}': {type(value)}")
+            
+            return metrics
+        
+        except Exception as e:
+            logging.error(f"Error generating semantic diversity report: {str(e)}")
+            return {}
+
+    def plot_solution_similarity_matrix(self):
+        """
+        Create a similarity matrix visualization based on semantic clusters
+        and bidirectional alignment
+        """
+        plt.figure(figsize=(10, 10))
+        
+        # Create similarity matrix
+        n_problems = len(self.results)
+        similarity_matrix = np.zeros((n_problems, n_problems))
+        
+        for i in range(n_problems):
+            for j in range(n_problems):
+                # Combine cluster similarity and alignment similarity
+                cluster_sim = float(
+                    self.results.iloc[i]['num_semantic_clusters'] ==
+                    self.results.iloc[j]['num_semantic_clusters']
+                )
+                alignment_sim = 1 - abs(
+                    self.results.iloc[i]['bidirectional_alignment'] -
+                    self.results.iloc[j]['bidirectional_alignment']
+                )
+                similarity_matrix[i,j] = (cluster_sim + alignment_sim) / 2
+        
+        # Plot heatmap
+        sns.heatmap(
+            similarity_matrix,
+            cmap='YlOrRd',
+            xticklabels=self.results.index,
+            yticklabels=self.results.index
+        )
+        plt.title('Solution Similarity Matrix')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "solution_similarity_matrix.png"))
+        plt.close()
+
     def generate_summary_statistics(self):
         """Generate and save summary statistics"""
         summary_stats = self.results.describe()
@@ -321,8 +520,14 @@ def evaluate_model(
         visualizer.plot_metric_correlations()
         visualizer.plot_metrics_over_problems()
         visualizer.plot_error_distributions()
+        visualizer.plot_alignment_triangle()
+        visualizer.plot_entropy_landscape()
+        visualizer.plot_alignment_progression()
+        visualizer.plot_solution_similarity_matrix()
+        diversity_metrics = visualizer.generate_semantic_diversity_report()
         summary_stats = visualizer.generate_summary_statistics()
         logging.info(f"Generated summary statistics:\n{summary_stats}")
+        logging.info(f"Generated semantic diversity report:\n{diversity_metrics}")
 
         # Save detailed results
         results_file = os.path.join(experiment_dir, "detailed_results.json")
@@ -546,6 +751,10 @@ def convert_to_native_types(obj):
         return {key: convert_to_native_types(value) for key, value in obj.items()}
     elif isinstance(obj, list):
         return [convert_to_native_types(item) for item in obj]
+    elif isinstance(obj, (np.int64, np.int32)):  # Add explicit handling for numpy integer types
+        return int(obj)
+    elif isinstance(obj, (np.float64, np.float32)):  # Add explicit handling for numpy float types
+        return float(obj)
     return obj
 
 def evaluate_problem(
