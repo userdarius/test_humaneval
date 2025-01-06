@@ -253,75 +253,6 @@ def get_topk_next_tokens(
     return topk_values, topk_indices, topk_logprobs
 
 
-def generate_single_branch(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
-    max_length: int,
-    inputs: Dict[str, torch.Tensor],
-) -> Tuple[str, float, float]:
-    response_tokens = [inputs["input_ids"][0, -1].item()]
-    prob_diffs = []
-    sequence_logprob = 0.0  # Track sequence log probability
-
-    print(f"Starting with initial token: '{tokenizer.decode([response_tokens[0]])}'")
-
-    for step in range(max_length):
-        topk_values, topk_indices, topk_logprobs = get_topk_next_tokens(
-            model, inputs, num_branches=10
-        )
-
-        next_token = topk_indices[0, 0].item()
-        next_token_text = tokenizer.decode([next_token])
-
-        # Add log probability of chosen token
-        sequence_logprob += topk_logprobs[0, 0].item()
-
-        current_text = tokenizer.decode(response_tokens + [next_token])
-        print(f"Step {step}: Token {next_token} -> '{next_token_text}'")
-        print(f"Current text: '{current_text}'")
-
-        # Check stopping conditions
-        if any(
-            stop in next_token_text for stop in [".", "\n", "Explanation:", "Answer:"]
-        ):
-            if next_token_text.strip() == "." and not any(
-                stop in current_text for stop in [".", "\n", "Explanation:", "Answer:"]
-            ):
-                response_tokens.append(next_token)
-                sequence_logprob += topk_logprobs[0, 0].item()
-            break
-
-        # Regular token processing
-        prob_diff = (topk_values[0, 0] - topk_values[0, 1]).item()
-        response_tokens.append(next_token)
-        prob_diffs.append(prob_diff)
-
-        # Update inputs
-        next_token_tensor = torch.tensor(
-            [[next_token]], device=inputs["input_ids"].device
-        )
-        inputs["input_ids"] = torch.cat([inputs["input_ids"], next_token_tensor], dim=1)
-        if "attention_mask" in inputs:
-            inputs["attention_mask"] = torch.cat(
-                [
-                    inputs["attention_mask"],
-                    torch.ones((1, 1), device=inputs["attention_mask"].device),
-                ],
-                dim=1,
-            )
-
-    # Convert token IDs to text at the end
-    generated_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
-    avg_prob_diff = sum(prob_diffs) / len(prob_diffs) if prob_diffs else 0
-
-    # Normalize log probability by sequence length
-    normalized_logprob = (
-        sequence_logprob / len(response_tokens) if response_tokens else 0
-    )
-
-    return generated_text.strip(), avg_prob_diff, normalized_logprob
-
-
 def generate_branching_responses(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -333,16 +264,25 @@ def generate_branching_responses(
     Generate multiple responses by exploring different initial tokens.
     Returns tuples of (text, confidence_score, log_probability)
     """
+    # Format prompt for code generation
+    formatted_prompt = f"""Below is a programming problem. Write a solution:
+
+{prompt}
+
+Here's the solution:
+
+"""
+
     # Tokenize the prompt
-    inputs = tokenizer(prompt, return_tensors="pt")
+    inputs = tokenizer(formatted_prompt, return_tensors="pt", truncation=True, max_length=2048)
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     # Get initial top k tokens
     topk_values, topk_indices, topk_logprobs = get_topk_next_tokens(
         model, inputs, num_branches
-    )  # Updated to unpack 3 values
+    )
 
-    # Log initial token choices
+    # Log initial token choices for debugging
     for k in range(num_branches):
         token_text = tokenizer.decode(topk_indices[0, k])
         print(
@@ -352,33 +292,19 @@ def generate_branching_responses(
     responses = []
     for k in range(num_branches):
         print(f"\nStarting branch {k+1}")
-        first_token = topk_indices[:, k : k + 1]
-        first_token_text = tokenizer.decode(first_token[0])
-        print(f"First token: '{first_token_text}'")
-        # if first token is a stop token, skip this branch
-        if any(
-            stop in first_token_text
-            for stop in [".", "\n", "Explanation:", "Answer:", r" \ ", "\\"]
-        ):
-            print(f"Skipping branch {k+1} because it starts with a stop token")
-            continue
-
+        
         # Create a new branch starting with the k-th most likely token
         branch_inputs = {
             "input_ids": torch.cat(
                 [inputs["input_ids"], topk_indices[:, k : k + 1]], dim=1
             ),
-            "attention_mask": (
-                torch.cat(
-                    [
-                        inputs["attention_mask"],
-                        torch.ones((1, 1), device=inputs["attention_mask"].device),
-                    ],
-                    dim=1,
-                )
-                if "attention_mask" in inputs
-                else None
-            ),
+            "attention_mask": torch.cat(
+                [
+                    inputs["attention_mask"],
+                    torch.ones((1, 1), device=inputs["attention_mask"].device),
+                ],
+                dim=1,
+            )
         }
 
         # Generate the rest of the response for this branch
@@ -386,7 +312,66 @@ def generate_branching_responses(
             model, tokenizer, max_length, branch_inputs
         )
 
-        responses.append((generated_text, confidence_score, log_prob))
+        if generated_text.strip():  # Only add non-empty responses
+            responses.append((generated_text, confidence_score, log_prob))
 
     print("\nAll branches complete\n")
     return responses
+
+def generate_single_branch(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    max_length: int,
+    inputs: Dict[str, torch.Tensor],
+) -> Tuple[str, float, float]:
+    """Generate a single branch of code."""
+    response_tokens = [inputs["input_ids"][0, -1].item()]
+    prob_diffs = []
+    sequence_logprob = 0.0
+
+    for step in range(max_length):
+        topk_values, topk_indices, topk_logprobs = get_topk_next_tokens(
+            model, inputs, num_branches=10
+        )
+
+        next_token = topk_indices[0, 0].item()
+        next_token_text = tokenizer.decode([next_token])
+        sequence_logprob += topk_logprobs[0, 0].item()
+
+        # Decode current state for checking
+        current_text = tokenizer.decode(response_tokens + [next_token])
+        
+        # Stop if we've completed a function definition
+        if "\n\n" in current_text and "def" in current_text:
+            last_func_end = current_text.rfind("\n\n")
+            if last_func_end > current_text.rfind("def"):
+                break
+
+        # Stop on specific tokens that might indicate end of function
+        if any(stop in next_token_text for stop in [
+            "class", "if __name__", "print(", "test_", "Test"
+        ]):
+            break
+
+        # Regular token processing
+        prob_diff = (topk_values[0, 0] - topk_values[0, 1]).item()
+        response_tokens.append(next_token)
+        prob_diffs.append(prob_diff)
+
+        # Update inputs for next iteration
+        next_token_tensor = torch.tensor([[next_token]], device=inputs["input_ids"].device)
+        inputs["input_ids"] = torch.cat([inputs["input_ids"], next_token_tensor], dim=1)
+        inputs["attention_mask"] = torch.cat(
+            [
+                inputs["attention_mask"],
+                torch.ones((1, 1), device=inputs["attention_mask"].device),
+            ],
+            dim=1,
+        )
+
+    # Convert token IDs to text
+    generated_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
+    avg_prob_diff = sum(prob_diffs) / len(prob_diffs) if prob_diffs else 0
+    normalized_logprob = sequence_logprob / len(response_tokens) if response_tokens else 0
+
+    return generated_text.strip(), avg_prob_diff, normalized_logprob

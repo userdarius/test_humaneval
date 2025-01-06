@@ -656,8 +656,8 @@ def main():
         model,
         tokenizer,
         dataset,
-        num_problems=164,
-        n_samples=5,
+        num_problems=50,
+        n_samples=10,
         k=2,
         entailment_model=entailment_model,
     )
