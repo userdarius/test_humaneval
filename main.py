@@ -15,7 +15,7 @@ import statistics
 import numpy as np
 from dataclasses import dataclass, asdict
 from collections import defaultdict
-from model import CodeAwareDeberta
+from model import CodeAwareDeberta, generate_branching_responses
 from scores import (
     get_semantic_ids,
     cluster_assignment_entropy,
@@ -187,12 +187,12 @@ def execute_test_case(func_obj, test_case, test_env):
         logging.error(f"Error executing test case: {type(e).__name__}: {str(e)}")
         return False
 
-
 def evaluate_model(
     model, tokenizer, dataset, num_problems, n_samples, k, entailment_model
 ):
     """
-    Evaluate the model on the dataset with error tracking and semantic uncertainty metrics.
+    Evaluate the model on the dataset using branching generation with error tracking 
+    and semantic uncertainty metrics.
     """
     results = []
     error_tracker = ErrorTracker()
@@ -211,139 +211,75 @@ def evaluate_model(
         test_code = problem["test_code"]
         correct_samples = 0
 
-        # Store all solutions (both raw and processed) and their scores
+        # Store all solutions and their scores
         raw_solutions = []
         processed_solutions = []
         solution_log_probs = []
 
         try:
-            encoded_input = tokenizer(question, return_tensors="pt", truncation=True)
-            input_ids = encoded_input["input_ids"].to(device)
-            attention_mask = encoded_input.get("attention_mask", None)
-            if attention_mask is not None:
-                attention_mask = attention_mask.to(device)
-
-            outputs = model.generate(
-                input_ids,
-                attention_mask=attention_mask,
-                max_new_tokens=256,
-                temperature=0.6,
-                top_p=0.8,
-                top_k=100,
-                output_scores=True,
-                num_return_sequences=n_samples,
-                return_dict_in_generate=True,
-                pad_token_id=tokenizer.eos_token_id,
-                no_repeat_ngram_size=3,
-                early_stopping=False,
-                return_legacy_cache=False,
+            # Generate solutions using branching method
+            responses = generate_branching_responses(
+                model=model,
+                tokenizer=tokenizer,
+                prompt=question,
+                max_length=256,  # Equivalent to max_new_tokens
+                num_branches=n_samples  # Use n_samples as number of branches
             )
 
-            if hasattr(outputs, "scores") and outputs.scores:
-                scores = outputs.scores
-                # For each sequence in the batch
-                for batch_idx in range(len(outputs.sequences)):
-                    error_tracker.increment_total(idx)
-                    generated_ids = outputs.sequences[batch_idx]
-                    log_prob = 0
-                    sequence_length = 0
+            # Process each generated response
+            for response, confidence_score, log_prob in responses:
+                error_tracker.increment_total(idx)
+                
+                # Store raw solution and log probability
+                raw_solutions.append(response)
+                # Scale and clip log probability similar to original code
+                scaled_log_prob = np.clip(log_prob, -10.0, 0.0)
+                solution_log_probs.append(scaled_log_prob)
 
-                    # Get indices of non-padding tokens
-                    non_pad_indices = (
-                        (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
+                # Extract and fix the function
+                generated_code = ""
+                if "def " + entry_point in response:
+                    start = response.find("def " + entry_point)
+                    generated_code = response[start:]
+                    generated_code = extract_and_fix_function(
+                        generated_code, entry_point
                     )
-                    if len(non_pad_indices) > 0:
-                        start_idx = non_pad_indices[0].item()
-
-                        for step, score in enumerate(scores):
-                            if isinstance(score, tuple):
-                                score = score[0]
-                            step_log_probs = torch.log_softmax(score, dim=-1)
-
-                            # Only include if we're past the prompt
-                            if step + start_idx + 1 < len(generated_ids):
-                                token = generated_ids[step + start_idx + 1]
-
-                                # Skip padding tokens
-                                if token == tokenizer.pad_token_id:
-                                    continue
-
-                                # Get probability for this specific sequence's token
-                                log_prob_step = step_log_probs[batch_idx, token].item()
-
-                                # Weight important tokens more heavily
-                                if token in [
-                                    tokenizer.convert_tokens_to_ids(t)
-                                    for t in ["return", "while", "if", "for"]
-                                ]:
-                                    log_prob_step *= (
-                                        1.2  # Boost probability for structural tokens
-                                    )
-
-                                if not np.isfinite(log_prob_step):
-                                    log_prob_step = -10.0
-
-                                log_prob += log_prob_step
-                                sequence_length += 1
-
-                        if sequence_length > 0:
-                            log_prob = log_prob / sequence_length
-                            # Remove this scaling factor as it's reducing the differences
-                            # log_prob = log_prob / 5.0
-
-                        # Use a wider range for clipping
-                        log_prob = np.clip(log_prob, -10.0, 0.0)
-                    else:
-                        log_prob = 0.0
-
-                    response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-                    raw_solutions.append(response)
-                    solution_log_probs.append(log_prob)
-
-                    # Extract and fix the function
-                    generated_code = ""
-                    if "def " + entry_point in response:
-                        start = response.find("def " + entry_point)
-                        generated_code = response[start:]
-                        generated_code = extract_and_fix_function(
-                            generated_code, entry_point
-                        )
-
-                        if generated_code:
-                            processed_solutions.append(generated_code)
-                            logging.info(
-                                f"Generated code after MAIN extraction: {generated_code}"
-                            )
-
-                    # Run tests
-                    test_env = create_test_env()
-                    if try_run_tests(response, entry_point, test_code, test_env):
-                        correct_samples += 1
-                        logging.info("✓ Sample passed all tests on raw response")
-                        continue
 
                     if generated_code:
-                        test_env = create_test_env()
-                        if try_run_tests(
-                            generated_code,
-                            entry_point,
-                            test_code,
-                            test_env,
-                            error_tracker,
-                            idx,
-                        ):
-                            correct_samples += 1
-                            logging.info("✓ Sample passed all tests after fixing")
-                            continue
+                        processed_solutions.append(generated_code)
+                        logging.info(
+                            f"Generated code after extraction: {generated_code}"
+                        )
 
-                    logging.info("✗ Sample failed all test attempts")
+                # Run tests
+                test_env = create_test_env()
+                if try_run_tests(response, entry_point, test_code, test_env):
+                    correct_samples += 1
+                    logging.info("✓ Sample passed all tests on raw response")
+                    continue
+
+                if generated_code:
+                    test_env = create_test_env()
+                    if try_run_tests(
+                        generated_code,
+                        entry_point,
+                        test_code,
+                        test_env,
+                        error_tracker,
+                        idx,
+                    ):
+                        correct_samples += 1
+                        logging.info("✓ Sample passed all tests after fixing")
+                        continue
+
+                logging.info("✗ Sample failed all test attempts")
 
         except Exception as e:
             error_tracker.add_error(idx, type(e).__name__)
             logging.error(f"Unexpected error: {type(e).__name__}: {str(e)}")
             continue
 
-        # Calculate semantic metrics using the best available solutions
+        # Calculate semantic metrics
         semantic_metrics = {}
 
         if processed_solutions:
@@ -373,54 +309,30 @@ def evaluate_model(
             logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
 
             if extracted_solution_bodies:
-                # clear cache
-                torch.cuda.empty_cache()
-                gc.collect()
-                logging.info(
-                    f"Calculating alignments for {len(extracted_solution_bodies)} solutions"
-                )
-
                 # Calculate alignments
                 canonical_alignments = []
                 reverse_alignments = []
 
                 for solution in extracted_solution_bodies:
-                    # Measure if canonical solution entails the generated solution
                     canon_align = context_entails_response(
                         canonical_solution, [solution], entailment_model
                     )
                     canonical_alignments.append(canon_align)
 
-                    # Measure if generated solution entails the canonical solution
                     rev_align = context_entails_response(
                         solution, [canonical_solution], entailment_model
                     )
                     reverse_alignments.append(rev_align)
 
-                    logging.debug(
-                        f"Solution alignment scores - canonical: {canon_align:.3f}, reverse: {rev_align:.3f}"
-                    )
-
                 # Calculate average alignments
-                canonical_alignment = sum(canonical_alignments) / len(
-                    canonical_alignments
-                )
-                reverse_alignment = sum(reverse_alignments) / len(reverse_alignments)
+                canonical_alignment = statistics.mean(canonical_alignments)
+                reverse_alignment = statistics.mean(reverse_alignments)
                 bidirectional = (canonical_alignment + reverse_alignment) / 2
 
-                logging.info(
-                    f"Average canonical alignment score: {canonical_alignment:.3f}"
-                )
-                logging.info(
-                    f"Average reverse alignment score: {reverse_alignment:.3f}"
-                )
-                logging.info(
-                    f"Average bidirectional alignment score: {bidirectional:.3f}"
-                )
+                logging.info(f"Average canonical alignment score: {canonical_alignment:.3f}")
+                logging.info(f"Average reverse alignment score: {reverse_alignment:.3f}")
+                logging.info(f"Average bidirectional alignment score: {bidirectional:.3f}")
             else:
-                logging.warning(
-                    "No valid solutions available for alignment calculation"
-                )
                 canonical_alignment = 0.0
                 reverse_alignment = 0.0
                 bidirectional = 0.0
@@ -460,12 +372,6 @@ def evaluate_model(
         logging.info(f"pass@{k}: {pass_at_k:.2f}")
         if semantic_metrics:
             logging.info(f"Semantic metrics: {semantic_metrics}")
-            logging.info(
-                f"Canonical solution alignment: {semantic_metrics['canonical_alignment']:.2f}"
-            )
-            logging.info(
-                f"Bidirectional alignment: {semantic_metrics['bidirectional_alignment']:.2f}"
-            )
 
     # Calculate aggregate metrics
     aggregate_metrics = calculate_aggregate_metrics(results)
