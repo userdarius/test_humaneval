@@ -66,27 +66,6 @@ class ResultsVisualizer:
         self.results = pd.DataFrame(cleaned_results)
         self.experiment_dir = experiment_dir
 
-    def plot_metric_distribution(self, metric_name, title=None):
-        """Create a distribution plot for a specific metric"""
-        plt.figure(figsize=(10, 6))
-        sns.histplot(data=self.results[metric_name], kde=True)
-        plt.title(title or f"Distribution of {metric_name}")
-        plt.xlabel(metric_name)
-        plt.ylabel("Count")
-        plt.savefig(os.path.join(self.experiment_dir, f"{metric_name}_distribution.png"))
-        plt.close()
-
-    def plot_metric_correlations(self):
-        """Create a correlation heatmap between different metrics"""
-        plt.figure(figsize=(12, 10))
-        numeric_cols = self.results.select_dtypes(include=[np.number]).columns
-        correlation_matrix = self.results[numeric_cols].corr()
-        sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", center=0)
-        plt.title("Correlation Between Code Generation Metrics")
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_dir, "metric_correlations.png"))
-        plt.close()
-
     def plot_metrics_over_problems(self):
         """Plot all metrics across problems"""
         metrics = [col for col in self.results.columns if col != 'problem_id']
@@ -103,21 +82,6 @@ class ResultsVisualizer:
         plt.tight_layout()
         plt.savefig(os.path.join(self.experiment_dir, "metrics_across_problems.png"))
         plt.close()
-
-    def plot_error_distributions(self):
-        """Plot distribution of different error types"""
-        error_columns = [col for col in self.results.columns if col.startswith('error_')]
-        if error_columns:
-            plt.figure(figsize=(10, 6))
-            error_data = self.results[error_columns].sum()
-            error_data.plot(kind='bar')
-            plt.title("Distribution of Error Types")
-            plt.xlabel("Error Type")
-            plt.ylabel("Count")
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.experiment_dir, "error_distributions.png"))
-            plt.close()
 
     def plot_alignment_triangle(self):
         """
@@ -155,42 +119,6 @@ class ResultsVisualizer:
         plt.savefig(os.path.join(self.experiment_dir, "alignment_triangle.png"))
         plt.close()
 
-    def plot_entropy_landscape(self):
-        """
-        Create a 2D landscape plot comparing different entropy metrics:
-        - semantic entropy
-        - predictive entropy
-        - cluster entropy (derived from semantic clustering)
-        """
-        plt.figure(figsize=(12, 8))
-        
-        # Calculate cluster entropy if not present
-        if 'cluster_entropy' not in self.results.columns:
-            self.results['cluster_entropy'] = -np.log2(
-                self.results['largest_cluster_size'] / 
-                self.results['num_semantic_clusters']
-            )
-        
-        # Create 3D scatter plot
-        ax = plt.axes(projection='3d')
-        scatter = ax.scatter(
-            self.results['semantic_entropy'],
-            self.results['predictive_entropy'],
-            self.results['cluster_entropy'],
-            c=self.results['pass_at_k'],
-            cmap='coolwarm',
-            alpha=0.6
-        )
-        
-        plt.colorbar(scatter, label='Pass@k Score')
-        ax.set_xlabel('Semantic Entropy')
-        ax.set_ylabel('Predictive Entropy')
-        ax.set_zlabel('Cluster Entropy')
-        plt.title('Entropy Landscape')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_dir, "entropy_landscape.png"))
-        plt.close()
-
     def plot_alignment_progression(self):
         """
         Plot how alignment metrics change across different problem difficulties,
@@ -226,6 +154,239 @@ class ResultsVisualizer:
         plt.tight_layout()
         plt.savefig(os.path.join(self.experiment_dir, "alignment_progression.png"))
         plt.close()
+
+    def plot_metric_distribution(self, metric_name, title=None):
+        """Create a distribution plot for a specific metric"""
+        plt.figure(figsize=(10, 6))
+        sns.histplot(data=self.results[metric_name], kde=True)
+        plt.title(title or f"Distribution of {metric_name}")
+        plt.xlabel(metric_name)
+        plt.ylabel("Count")
+        plt.savefig(os.path.join(self.experiment_dir, f"{metric_name}_distribution.png"))
+        plt.close()
+
+    def plot_metric_correlations(self):
+        """Create a correlation heatmap between different metrics"""
+        plt.figure(figsize=(12, 10))
+        numeric_cols = self.results.select_dtypes(include=[np.number]).columns
+        correlation_matrix = self.results[numeric_cols].corr()
+        sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", center=0)
+        plt.title("Correlation Between Code Generation Metrics")
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "metric_correlations.png"))
+        plt.close()
+
+    def plot_error_distributions(self):
+        """Plot distribution of different error types"""
+        error_columns = [col for col in self.results.columns if col.startswith('error_')]
+        if error_columns:
+            plt.figure(figsize=(10, 6))
+            error_data = self.results[error_columns].sum()
+            error_data.plot(kind='bar')
+            plt.title("Distribution of Error Types")
+            plt.xlabel("Error Type")
+            plt.ylabel("Count")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.experiment_dir, "error_distributions.png"))
+            plt.close()
+
+    def plot_entropy_pass_trajectory(self):
+        """Plot how semantic entropy changes with pass@k across problem difficulty"""
+        plt.figure(figsize=(12, 6))
+        
+        # Sort problems by difficulty (using pass@k as proxy)
+        difficulty_order = self.results.sort_values('pass_at_k').index
+        
+        # Create trajectory plot
+        plt.plot(
+            self.results.loc[difficulty_order, 'semantic_entropy'],
+            label='Semantic Entropy',
+            color='blue',
+            marker='o'
+        )
+        plt.plot(
+            self.results.loc[difficulty_order, 'pass_at_k'] * 
+            self.results['semantic_entropy'].max(),  # Scale to match entropy range
+            label='Pass@k (scaled)',
+            color='red',
+            marker='s'
+        )
+        
+        # Add cluster size indicators
+        sizes = self.results.loc[difficulty_order, 'num_semantic_clusters']
+        plt.scatter(
+            range(len(difficulty_order)),
+            self.results.loc[difficulty_order, 'semantic_entropy'],
+            s=sizes*20,  # Scale for visibility
+            alpha=0.3,
+            color='blue',
+            label='Cluster Size'
+        )
+        
+        plt.xlabel('Problems (sorted by difficulty)')
+        plt.ylabel('Entropy / Performance')
+        plt.title('Entropy-Performance Trajectory')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(self.experiment_dir, "entropy_pass_trajectory.png"))
+        plt.close()
+
+    def plot_solution_quality_matrix(self):
+        """Create a matrix visualization of solution quality metrics"""
+        metrics = [
+            'semantic_entropy',
+            'predictive_entropy',
+            'canonical_alignment',
+            'bidirectional_alignment',
+            'semantic_diversity',
+            'pass_at_k'
+        ]
+        
+        # Create correlation matrix
+        corr_matrix = self.results[metrics].corr()
+        
+        plt.figure(figsize=(10, 8))
+        mask = np.triu(np.ones_like(corr_matrix), k=1)
+        sns.heatmap(
+            corr_matrix,
+            mask=mask,
+            annot=True,
+            cmap='RdYlBu',
+            center=0,
+            vmin=-1,
+            vmax=1,
+            square=True
+        )
+        plt.title('Solution Quality Correlation Matrix')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "solution_quality_matrix.png"))
+        plt.close()
+
+    def calculate_cluster_stability(self):
+        """Calculate stability metrics for semantic clusters"""
+        stability_metrics = {
+            'cluster_size_variation': self.results['cluster_size_std'].mean(),
+            'entropy_stability': 1 - self.results['semantic_entropy'].std() / 
+                               self.results['semantic_entropy'].mean(),
+            'alignment_consistency': 1 - abs(
+                self.results['canonical_alignment'].mean() - 
+                self.results['reverse_alignment'].mean()
+            )
+        }
+        return stability_metrics
+
+    def plot_entropy_decomposition(self):
+        """Visualize components contributing to overall entropy"""
+        plt.figure(figsize=(12, 6))
+        
+        # Calculate entropy components
+        semantic_component = self.results['semantic_entropy'] * \
+                           self.results['semantic_diversity']
+        predictive_component = self.results['predictive_entropy'] * \
+                             (1 - self.results['majority_solution_frequency'])
+        alignment_component = (self.results['canonical_alignment'] + 
+                             self.results['reverse_alignment']) / 2
+        
+        # Create stacked area plot
+        plt.stackplot(
+            range(len(self.results)),
+            [semantic_component, predictive_component, alignment_component],
+            labels=['Semantic', 'Predictive', 'Alignment'],
+            alpha=0.6
+        )
+        
+        plt.xlabel('Problem Index')
+        plt.ylabel('Entropy Components')
+        plt.title('Decomposition of Solution Space Entropy')
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(self.experiment_dir, "entropy_decomposition.png"))
+        plt.close()
+
+    def plot_entropy_landscape(self):
+        """Create a 2D entropy landscape visualization"""
+        plt.figure(figsize=(12, 8))
+
+        # Calculate cluster entropy
+        self.results['cluster_entropy'] = -np.log2(
+            self.results['largest_cluster_size'] / 
+            self.results['num_semantic_clusters']
+        )
+        
+        ax = plt.axes(projection='3d')
+        scatter = ax.scatter(
+            self.results['semantic_entropy'],
+            self.results['predictive_entropy'],
+            self.results['cluster_entropy'],
+            c=self.results['pass_at_k'],
+            cmap='coolwarm',
+            alpha=0.6
+        )
+        
+        plt.colorbar(scatter, label='Pass@k Score')
+        ax.set_xlabel('Semantic Entropy')
+        ax.set_ylabel('Predictive Entropy')
+        ax.set_zlabel('Cluster Entropy')
+        plt.title('Entropy Landscape')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "entropy_landscape.png"))
+        plt.close()
+
+    def plot_solution_similarity_matrix(self):
+        """Create a similarity matrix visualization"""
+        plt.figure(figsize=(10, 10))
+        
+        n_problems = len(self.results)
+        similarity_matrix = np.zeros((n_problems, n_problems))
+        
+        for i in range(n_problems):
+            for j in range(n_problems):
+                cluster_sim = float(
+                    self.results.iloc[i]['num_semantic_clusters'] ==
+                    self.results.iloc[j]['num_semantic_clusters']
+                )
+                alignment_sim = 1 - abs(
+                    self.results.iloc[i]['bidirectional_alignment'] -
+                    self.results.iloc[j]['bidirectional_alignment']
+                )
+                similarity_matrix[i,j] = (cluster_sim + alignment_sim) / 2
+        
+        sns.heatmap(
+            similarity_matrix,
+            cmap='YlOrRd',
+            xticklabels=self.results.index,
+            yticklabels=self.results.index
+        )
+        plt.title('Solution Similarity Matrix')
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "solution_similarity_matrix.png"))
+        plt.close()
+
+    def generate_advanced_metrics(self):
+        """Calculate advanced performance metrics"""
+        metrics = {
+            'entropy_pass_correlation': np.corrcoef(
+                self.results['semantic_entropy'],
+                self.results['pass_at_k']
+            )[0,1],
+            'cluster_efficiency': np.mean(
+                self.results['pass_at_k'] / 
+                self.results['num_semantic_clusters']
+            ),
+            'solution_diversity_score': np.mean(
+                self.results['semantic_diversity'] * 
+                self.results['pass_at_k']
+            ),
+            'alignment_balance_score': 1 - abs(
+                np.mean(self.results['canonical_alignment'] - 
+                       self.results['reverse_alignment'])
+            ),
+            'entropy_stability_index': 1 - (
+                np.std(self.results['semantic_entropy']) /
+                np.mean(self.results['semantic_entropy'])
+            )
+        }
 
     def generate_semantic_diversity_report(self):
         """
@@ -281,42 +442,6 @@ class ResultsVisualizer:
         except Exception as e:
             logging.error(f"Error generating semantic diversity report: {str(e)}")
             return {}
-
-    def plot_solution_similarity_matrix(self):
-        """
-        Create a similarity matrix visualization based on semantic clusters
-        and bidirectional alignment
-        """
-        plt.figure(figsize=(10, 10))
-        
-        # Create similarity matrix
-        n_problems = len(self.results)
-        similarity_matrix = np.zeros((n_problems, n_problems))
-        
-        for i in range(n_problems):
-            for j in range(n_problems):
-                # Combine cluster similarity and alignment similarity
-                cluster_sim = float(
-                    self.results.iloc[i]['num_semantic_clusters'] ==
-                    self.results.iloc[j]['num_semantic_clusters']
-                )
-                alignment_sim = 1 - abs(
-                    self.results.iloc[i]['bidirectional_alignment'] -
-                    self.results.iloc[j]['bidirectional_alignment']
-                )
-                similarity_matrix[i,j] = (cluster_sim + alignment_sim) / 2
-        
-        # Plot heatmap
-        sns.heatmap(
-            similarity_matrix,
-            cmap='YlOrRd',
-            xticklabels=self.results.index,
-            yticklabels=self.results.index
-        )
-        plt.title('Solution Similarity Matrix')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_dir, "solution_similarity_matrix.png"))
-        plt.close()
 
     def generate_summary_statistics(self):
         """Generate and save summary statistics"""
@@ -523,6 +648,13 @@ def evaluate_model(
         visualizer.plot_alignment_triangle()
         visualizer.plot_entropy_landscape()
         visualizer.plot_alignment_progression()
+        visualizer.plot_entropy_pass_trajectory()
+        visualizer.plot_solution_quality_matrix()
+        visualizer.plot_entropy_decomposition()
+        visualizer.calculate_cluster_stability()
+        visualizer.plot_metric_distribution('semantic_entropy', 'Semantic Entropy Distribution')
+        visualizer.plot_metric_distribution('predictive_entropy', 'Predictive Entropy Distribution')
+
         visualizer.plot_solution_similarity_matrix()
         diversity_metrics = visualizer.generate_semantic_diversity_report()
         summary_stats = visualizer.generate_summary_statistics()
