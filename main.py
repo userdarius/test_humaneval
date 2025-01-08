@@ -25,9 +25,262 @@ from scores import (
 )
 import logging
 import gc
+import os
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+import pandas as pd
+import json
+from datetime import datetime
+import logging
+from typing import List, Dict, Any
 
 
-logging.basicConfig(level=logging.INFO)
+class ResultsVisualizer:
+    def __init__(self, results_list, experiment_dir):
+        """Initialize with a list of result dictionaries and experiment directory"""
+        # Clean results by removing non-numeric and nested data
+        cleaned_results = []
+        for result in results_list:
+            clean_result = {
+                "problem_id": result["problem_id"],
+                "pass_at_k": result["pass_at_k"],
+            }
+            # Add semantic metrics if they exist
+            if result["semantic_metrics"]:
+                clean_result.update(result["semantic_metrics"])
+            # Add error stats
+            for error_type, count in result["error_stats"].items():
+                if error_type != "total_samples":
+                    clean_result[f"error_{error_type}"] = count
+            cleaned_results.append(clean_result)
+
+        self.results = pd.DataFrame(cleaned_results)
+        self.experiment_dir = experiment_dir
+
+    def plot_metrics_over_problems(self):
+        """Plot all metrics across problems"""
+        metrics = [col for col in self.results.columns if col != "problem_id"]
+        plt.figure(figsize=(12, 6))
+        for metric in metrics:
+            plt.plot(
+                range(len(self.results)), self.results[metric], label=metric, marker="o"
+            )
+        plt.title("Metrics across Problems")
+        plt.xlabel("Problem Index")
+        plt.ylabel("Value")
+        plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "metrics_across_problems.png"))
+        plt.close()
+
+    def plot_alignment_triangle(self):
+        """Create triangular visualization of alignment metrics"""
+        plt.figure(figsize=(10, 8))
+        plt.scatter(
+            self.results["canonical_alignment"],
+            self.results["reverse_alignment"],
+            c=self.results["bidirectional_alignment"],
+            cmap="viridis",
+            alpha=0.6,
+        )
+        plt.colorbar(label="Bidirectional Alignment Score")
+        max_val = max(
+            self.results["canonical_alignment"].max(),
+            self.results["reverse_alignment"].max(),
+        )
+        plt.plot([0, max_val], [0, max_val], "r--", alpha=0.5, label="Perfect Balance")
+        plt.xlabel("Canonical Alignment")
+        plt.ylabel("Reverse Alignment")
+        plt.title("Alignment Triangle Visualization")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "alignment_triangle.png"))
+        plt.close()
+
+    def plot_entropy_pass_trajectory(self):
+        """Plot entropy changes with pass@k across problem difficulty"""
+        plt.figure(figsize=(12, 6))
+        difficulty_order = self.results.sort_values("pass_at_k").index
+
+        plt.plot(
+            self.results.loc[difficulty_order, "semantic_entropy"],
+            label="Semantic Entropy",
+            color="blue",
+            marker="o",
+        )
+        plt.plot(
+            self.results.loc[difficulty_order, "pass_at_k"]
+            * self.results["semantic_entropy"].max(),
+            label="Pass@k (scaled)",
+            color="red",
+            marker="s",
+        )
+
+        sizes = self.results.loc[difficulty_order, "num_semantic_clusters"]
+        plt.scatter(
+            range(len(difficulty_order)),
+            self.results.loc[difficulty_order, "semantic_entropy"],
+            s=sizes * 20,
+            alpha=0.3,
+            color="blue",
+            label="Cluster Size",
+        )
+
+        plt.xlabel("Problems (sorted by difficulty)")
+        plt.ylabel("Entropy / Performance")
+        plt.title("Entropy-Performance Trajectory")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.savefig(os.path.join(self.experiment_dir, "entropy_pass_trajectory.png"))
+        plt.close()
+
+    def plot_metric_correlations(self):
+        """Create correlation heatmap between metrics"""
+        plt.figure(figsize=(12, 10))
+        numeric_cols = self.results.select_dtypes(include=[np.number]).columns
+        correlation_matrix = self.results[numeric_cols].corr()
+        sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", center=0)
+        plt.title("Correlation Between Code Generation Metrics")
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "metric_correlations.png"))
+        plt.close()
+
+    def plot_error_distributions(self):
+        """Plot distribution of error types"""
+        error_columns = [
+            col for col in self.results.columns if col.startswith("error_")
+        ]
+        if error_columns:
+            plt.figure(figsize=(10, 6))
+            error_data = self.results[error_columns].sum()
+            error_data.plot(kind="bar")
+            plt.title("Distribution of Error Types")
+            plt.xlabel("Error Type")
+            plt.ylabel("Count")
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.experiment_dir, "error_distributions.png"))
+            plt.close()
+
+    def plot_solution_quality_matrix(self):
+        """Create matrix visualization of solution quality metrics"""
+        metrics = [
+            "semantic_entropy",
+            "predictive_entropy",
+            "canonical_alignment",
+            "bidirectional_alignment",
+            "pass_at_k",
+        ]
+
+        corr_matrix = self.results[metrics].corr()
+        plt.figure(figsize=(10, 8))
+        mask = np.triu(np.ones_like(corr_matrix), k=1)
+        sns.heatmap(
+            corr_matrix,
+            mask=mask,
+            annot=True,
+            cmap="RdYlBu",
+            center=0,
+            vmin=-1,
+            vmax=1,
+            square=True,
+        )
+        plt.title("Solution Quality Correlation Matrix")
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "solution_quality_matrix.png"))
+        plt.close()
+
+    def plot_alignment_progression(self):
+        """Plot alignment metrics across problem difficulties"""
+        plt.figure(figsize=(12, 6))
+        sorted_idx = self.results["pass_at_k"].sort_values().index
+        plt.plot(
+            self.results.loc[sorted_idx, "canonical_alignment"],
+            label="Canonical",
+            marker="o",
+        )
+        plt.plot(
+            self.results.loc[sorted_idx, "reverse_alignment"],
+            label="Reverse",
+            marker="s",
+        )
+        plt.plot(
+            self.results.loc[sorted_idx, "bidirectional_alignment"],
+            label="Bidirectional",
+            marker="^",
+        )
+        plt.xlabel("Problems (sorted by difficulty)")
+        plt.ylabel("Alignment Score")
+        plt.title("Alignment Progression Across Problem Difficulty")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(os.path.join(self.experiment_dir, "alignment_progression.png"))
+        plt.close()
+
+    def generate_summary_statistics(self):
+        """Generate and save summary statistics"""
+        summary_stats = self.results.describe()
+        summary_stats.to_csv(
+            os.path.join(self.experiment_dir, "summary_statistics.csv")
+        )
+        return summary_stats
+
+
+def create_experiment_dir():
+    """Create a timestamped directory for the current experiment"""
+    results_dir = "results"
+    os.makedirs(results_dir, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_dir = os.path.join(results_dir, f"humaneval_{timestamp}")
+    os.makedirs(experiment_dir, exist_ok=True)
+    return experiment_dir
+
+
+def setup_logging(experiment_dir):
+    """Configure logging with detailed formatting"""
+    log_filename = os.path.join(experiment_dir, "humaneval.log")
+
+    file_formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(filename)s:%(lineno)d | %(funcName)s | %(message)s"
+    )
+    console_formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s")
+
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(file_formatter)
+
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+
+    logging.info(f"Logging initialized. Log file: {log_filename}")
+    return log_filename
+
+
+def convert_to_native_types(obj):
+    """Convert numpy types to native Python types for JSON serialization"""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_to_native_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_native_types(item) for item in obj]
+    elif isinstance(obj, (np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.float64, np.float32)):
+        return float(obj)
+    return obj
 
 
 @dataclass
@@ -197,6 +450,7 @@ def evaluate_model(
     results = []
     error_tracker = ErrorTracker()
     device = next(model.parameters()).device
+    experiment_dir = create_experiment_dir()
 
     for idx in tqdm(range(num_problems)):
         torch.cuda.empty_cache()
@@ -467,6 +721,27 @@ def evaluate_model(
                 f"Bidirectional alignment: {semantic_metrics['bidirectional_alignment']:.2f}"
             )
 
+    # Generate visualizations after all problems are processed
+    visualizer = ResultsVisualizer(results, experiment_dir)
+    try:
+        visualizer.plot_metric_correlations()
+        visualizer.plot_metrics_over_problems()
+        visualizer.plot_error_distributions()
+        visualizer.plot_alignment_triangle()
+        visualizer.plot_alignment_progression()
+        visualizer.plot_solution_quality_matrix()
+        visualizer.plot_entropy_pass_trajectory()
+        summary_stats = visualizer.generate_summary_statistics()
+        logging.info(f"Generated summary statistics:\n{summary_stats}")
+
+        # Save detailed results
+        results_file = os.path.join(experiment_dir, "detailed_results.json")
+        with open(results_file, "w") as f:
+            json.dump(convert_to_native_types(results), f, indent=2)
+
+    except Exception as e:
+        logging.error(f"Error generating visualizations: {str(e)}")
+
     # Calculate aggregate metrics
     aggregate_metrics = calculate_aggregate_metrics(results)
     return aggregate_metrics, results, error_tracker.get_total_stats()
@@ -725,6 +1000,9 @@ def calculate_pass_at_k(n_samples: int, n_correct: int, k: int) -> float:
 
 
 def main():
+    experiment_dir = create_experiment_dir()
+    setup_logging(experiment_dir)
+
     # Model parameters
     model_name = "meta-llama/Llama-3.1-8B-Instruct"  # need to add HF_TOKEN
 
@@ -751,12 +1029,25 @@ def main():
         tokenizer,
         dataset,
         num_problems=164,
-        n_samples=5,
+        n_samples=10,
         k=2,
         entailment_model=entailment_model,
     )
 
-    # Print aggregate metrics
+    results = {
+        "model_name": model_name,
+        "aggregate_metrics": convert_to_native_types(aggregate_metrics),
+        "timestamp": datetime.now().isoformat(),
+        "num_samples": len(dataset),
+        "error_statistics": convert_to_native_types(error_stats),
+        "detailed_results": convert_to_native_types(detailed_results),
+    }
+
+    results_file = os.path.join(experiment_dir, "final_results.json")
+    with open(results_file, "w") as f:
+        json.dump(results, f, indent=2)
+
+    # Print final results
     logging.info("\nFinal Results:")
     logging.info(f"Mean pass@k: {aggregate_metrics['mean_pass_at_k']:.2f}")
     logging.info(
@@ -768,23 +1059,9 @@ def main():
     logging.info(
         f"Mean canonical alignment: {aggregate_metrics['mean_canonical_alignment']:.2f}"
     )
-    logging.info(f"Error Statistics:\n{json.dumps(error_stats, indent=2)}")
-
-    # Save results
-    results = {
-        "model_name": model_name,
-        "aggregate_metrics": aggregate_metrics,
-        "timestamp": datetime.now().isoformat(),
-        "num_samples": len(dataset),
-        "error_statistics": error_stats,
-        "detailed_results": detailed_results,
-    }
-
-    results_file = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-    with open(results_file, "w") as f:
-        json.dump(results, f, indent=2)
-
-    logging.info(f"Results saved to {results_file}")
+    logging.info(f"\nError Statistics:")
+    logging.info(json.dumps(error_stats, indent=2))
+    logging.info(f"\nResults saved to: {results_file}")
 
 
 if __name__ == "__main__":
