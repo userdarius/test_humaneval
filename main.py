@@ -37,6 +37,7 @@ from scores import (
 RESULTS_DIR = "results"
 os.makedirs(RESULTS_DIR, exist_ok=True)
 
+
 def create_experiment_dir():
     """Create a timestamped directory for the current experiment"""
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -44,414 +45,222 @@ def create_experiment_dir():
     os.makedirs(experiment_dir, exist_ok=True)
     return experiment_dir
 
+
 class ResultsVisualizer:
-    def __init__(self, results_list, experiment_dir):
-        """Initialize with a list of result dictionaries and experiment directory"""
-        # Clean results by removing non-numeric and nested data
+    def __init__(self, results_list, experiment_dir, model_name="baseline"):
+        """Initialize with results and experiment directory"""
         cleaned_results = []
         for result in results_list:
+            semantic_metrics = result.get("semantic_metrics", {})
             clean_result = {
-                'problem_id': result['problem_id'],
-                'pass_at_k': result['pass_at_k']
+                "problem_id": result["problem_id"],
+                "pass_at_k": result["pass_at_k"],
+                "semantic_entropy": semantic_metrics.get("semantic_entropy", 0),
+                "predictive_entropy": semantic_metrics.get("predictive_entropy", 0),
+                "predictive_entropy_rao": semantic_metrics.get(
+                    "predictive_entropy_rao", 0
+                ),
+                "num_semantic_clusters": semantic_metrics.get(
+                    "num_semantic_clusters", 0
+                ),
+                "largest_cluster_size": semantic_metrics.get("largest_cluster_size", 0),
+                "cluster_size_std": semantic_metrics.get("cluster_size_std", 0),
+                "semantic_diversity": semantic_metrics.get("semantic_diversity", 0),
+                "majority_solution_frequency": semantic_metrics.get(
+                    "majority_solution_frequency", 0
+                ),
             }
-            # Add semantic metrics if they exist
-            if result['semantic_metrics']:
-                clean_result.update(result['semantic_metrics'])
-            # Add error stats
-            for error_type, count in result['error_stats'].items():
-                if error_type != 'total_samples':
-                    clean_result[f'error_{error_type}'] = count
             cleaned_results.append(clean_result)
-            
+
         self.results = pd.DataFrame(cleaned_results)
         self.experiment_dir = experiment_dir
+        self.model_name = model_name
 
-    def plot_metrics_over_problems(self):
-        """Plot all metrics across problems"""
-        metrics = [col for col in self.results.columns if col != 'problem_id']
+    def plot_predictive_uncertainty_comparison(self, other_visualizer=None):
+        """Plot 1: Predictive entropy comparison between models"""
         plt.figure(figsize=(12, 6))
-        for metric in metrics:
-            plt.plot(range(len(self.results)), 
-                    self.results[metric], 
-                    label=metric, 
-                    marker='o')
-        plt.title("Metrics across Problems")
-        plt.xlabel("Problem Index")
-        plt.ylabel("Value")
-        plt.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_dir, "metrics_across_problems.png"))
-        plt.close()
 
-    def plot_alignment_triangle(self):
-        """
-        Create a triangular visualization showing relationships between:
-        - canonical alignment
-        - reverse alignment
-        - bidirectional alignment
-        """
-        plt.figure(figsize=(10, 8))
-        
-        # Create scatter plot
-        plt.scatter(
-            self.results['canonical_alignment'],
-            self.results['reverse_alignment'],
-            c=self.results['bidirectional_alignment'],
-            cmap='viridis',
-            alpha=0.6
-        )
-        
-        # Add colorbar
-        plt.colorbar(label='Bidirectional Alignment Score')
-        
-        # Add diagonal line for perfect alignment
-        max_val = max(
-            self.results['canonical_alignment'].max(),
-            self.results['reverse_alignment'].max()
-        )
-        plt.plot([0, max_val], [0, max_val], 'r--', alpha=0.5, label='Perfect Balance')
-        
-        plt.xlabel('Canonical Alignment')
-        plt.ylabel('Reverse Alignment')
-        plt.title('Alignment Triangle Visualization')
-        plt.legend()
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_dir, "alignment_triangle.png"))
-        plt.close()
+        # Sort problems by difficulty (pass@k)
+        sorted_idx = self.results["pass_at_k"].sort_values().index
 
-    def plot_alignment_progression(self):
-        """
-        Plot how alignment metrics change across different problem difficulties,
-        sorted by pass@k score
-        """
-        plt.figure(figsize=(12, 6))
-        
-        # Sort by pass@k
-        sorted_idx = self.results['pass_at_k'].sort_values().index
-        
-        # Plot alignment metrics
+        # Plot predictive entropy
         plt.plot(
-            self.results.loc[sorted_idx, 'canonical_alignment'],
-            label='Canonical',
-            marker='o'
+            self.results.loc[sorted_idx, "predictive_entropy"],
+            label=f"{self.model_name} Predictive Entropy",
+            marker="o",
         )
-        plt.plot(
-            self.results.loc[sorted_idx, 'reverse_alignment'],
-            label='Reverse',
-            marker='s'
-        )
-        plt.plot(
-            self.results.loc[sorted_idx, 'bidirectional_alignment'],
-            label='Bidirectional',
-            marker='^'
-        )
-        
-        plt.xlabel('Problems (sorted by difficulty)')
-        plt.ylabel('Alignment Score')
-        plt.title('Alignment Progression Across Problem Difficulty')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_dir, "alignment_progression.png"))
-        plt.close()
 
-    def plot_metric_distribution(self, metric_name, title=None):
-        """Create a distribution plot for a specific metric"""
-        plt.figure(figsize=(10, 6))
-        sns.histplot(data=self.results[metric_name], kde=True)
-        plt.title(title or f"Distribution of {metric_name}")
-        plt.xlabel(metric_name)
-        plt.ylabel("Count")
-        plt.savefig(os.path.join(self.experiment_dir, f"{metric_name}_distribution.png"))
-        plt.close()
-
-    def plot_metric_correlations(self):
-        """Create a correlation heatmap between different metrics"""
-        plt.figure(figsize=(12, 10))
-        numeric_cols = self.results.select_dtypes(include=[np.number]).columns
-        correlation_matrix = self.results[numeric_cols].corr()
-        sns.heatmap(correlation_matrix, annot=True, cmap="coolwarm", center=0)
-        plt.title("Correlation Between Code Generation Metrics")
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_dir, "metric_correlations.png"))
-        plt.close()
-
-    def plot_error_distributions(self):
-        """Plot distribution of different error types"""
-        error_columns = [col for col in self.results.columns if col.startswith('error_')]
-        if error_columns:
-            plt.figure(figsize=(10, 6))
-            error_data = self.results[error_columns].sum()
-            error_data.plot(kind='bar')
-            plt.title("Distribution of Error Types")
-            plt.xlabel("Error Type")
-            plt.ylabel("Count")
-            plt.xticks(rotation=45)
-            plt.tight_layout()
-            plt.savefig(os.path.join(self.experiment_dir, "error_distributions.png"))
-            plt.close()
-
-    def plot_entropy_pass_trajectory(self):
-        """Plot how semantic entropy changes with pass@k across problem difficulty"""
-        plt.figure(figsize=(12, 6))
-        
-        # Sort problems by difficulty (using pass@k as proxy)
-        difficulty_order = self.results.sort_values('pass_at_k').index
-        
-        # Create trajectory plot
-        plt.plot(
-            self.results.loc[difficulty_order, 'semantic_entropy'],
-            label='Semantic Entropy',
-            color='blue',
-            marker='o'
-        )
-        plt.plot(
-            self.results.loc[difficulty_order, 'pass_at_k'] * 
-            self.results['semantic_entropy'].max(),  # Scale to match entropy range
-            label='Pass@k (scaled)',
-            color='red',
-            marker='s'
-        )
-        
-        # Add cluster size indicators
-        sizes = self.results.loc[difficulty_order, 'num_semantic_clusters']
-        plt.scatter(
-            range(len(difficulty_order)),
-            self.results.loc[difficulty_order, 'semantic_entropy'],
-            s=sizes*20,  # Scale for visibility
-            alpha=0.3,
-            color='blue',
-            label='Cluster Size'
-        )
-        
-        plt.xlabel('Problems (sorted by difficulty)')
-        plt.ylabel('Entropy / Performance')
-        plt.title('Entropy-Performance Trajectory')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(self.experiment_dir, "entropy_pass_trajectory.png"))
-        plt.close()
-
-    def plot_solution_quality_matrix(self):
-        """Create a matrix visualization of solution quality metrics"""
-        metrics = [
-            'semantic_entropy',
-            'predictive_entropy',
-            'canonical_alignment',
-            'bidirectional_alignment',
-            'semantic_diversity',
-            'pass_at_k'
-        ]
-        
-        # Create correlation matrix
-        corr_matrix = self.results[metrics].corr()
-        
-        plt.figure(figsize=(10, 8))
-        mask = np.triu(np.ones_like(corr_matrix), k=1)
-        sns.heatmap(
-            corr_matrix,
-            mask=mask,
-            annot=True,
-            cmap='RdYlBu',
-            center=0,
-            vmin=-1,
-            vmax=1,
-            square=True
-        )
-        plt.title('Solution Quality Correlation Matrix')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_dir, "solution_quality_matrix.png"))
-        plt.close()
-
-    def calculate_cluster_stability(self):
-        """Calculate stability metrics for semantic clusters"""
-        stability_metrics = {
-            'cluster_size_variation': self.results['cluster_size_std'].mean(),
-            'entropy_stability': 1 - self.results['semantic_entropy'].std() / 
-                               self.results['semantic_entropy'].mean(),
-            'alignment_consistency': 1 - abs(
-                self.results['canonical_alignment'].mean() - 
-                self.results['reverse_alignment'].mean()
+        if other_visualizer:
+            other_sorted_idx = other_visualizer.results["pass_at_k"].sort_values().index
+            plt.plot(
+                other_visualizer.results.loc[other_sorted_idx, "predictive_entropy"],
+                label=f"{other_visualizer.model_name} Predictive Entropy",
+                marker="s",
             )
-        }
-        return stability_metrics
 
-    def plot_entropy_decomposition(self):
-        """Visualize components contributing to overall entropy"""
-        plt.figure(figsize=(12, 6))
-        
-        # Calculate entropy components
-        semantic_component = self.results['semantic_entropy'] * \
-                           self.results['semantic_diversity']
-        predictive_component = self.results['predictive_entropy'] * \
-                             (1 - self.results['majority_solution_frequency'])
-        alignment_component = (self.results['canonical_alignment'] + 
-                             self.results['reverse_alignment']) / 2
-        
-        # Create stacked area plot
-        plt.stackplot(
-            range(len(self.results)),
-            [semantic_component, predictive_component, alignment_component],
-            labels=['Semantic', 'Predictive', 'Alignment'],
-            alpha=0.6
+        # Add pass@k on secondary axis
+        ax2 = plt.twinx()
+        ax2.plot(
+            self.results.loc[sorted_idx, "pass_at_k"],
+            color="red",
+            linestyle="--",
+            label=f"{self.model_name} Pass@k",
         )
-        
-        plt.xlabel('Problem Index')
-        plt.ylabel('Entropy Components')
-        plt.title('Decomposition of Solution Space Entropy')
-        plt.legend()
-        plt.grid(True, alpha=0.3)
-        plt.savefig(os.path.join(self.experiment_dir, "entropy_decomposition.png"))
-        plt.close()
 
-    def plot_entropy_landscape(self):
-        """Create a 2D entropy landscape visualization"""
-        plt.figure(figsize=(12, 8))
-
-        # Calculate cluster entropy
-        self.results['cluster_entropy'] = -np.log2(
-            self.results['largest_cluster_size'] / 
-            self.results['num_semantic_clusters']
-        )
-        
-        ax = plt.axes(projection='3d')
-        scatter = ax.scatter(
-            self.results['semantic_entropy'],
-            self.results['predictive_entropy'],
-            self.results['cluster_entropy'],
-            c=self.results['pass_at_k'],
-            cmap='coolwarm',
-            alpha=0.6
-        )
-        
-        plt.colorbar(scatter, label='Pass@k Score')
-        ax.set_xlabel('Semantic Entropy')
-        ax.set_ylabel('Predictive Entropy')
-        ax.set_zlabel('Cluster Entropy')
-        plt.title('Entropy Landscape')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_dir, "entropy_landscape.png"))
-        plt.close()
-
-    def plot_solution_similarity_matrix(self):
-        """Create a similarity matrix visualization"""
-        plt.figure(figsize=(10, 10))
-        
-        n_problems = len(self.results)
-        similarity_matrix = np.zeros((n_problems, n_problems))
-        
-        for i in range(n_problems):
-            for j in range(n_problems):
-                cluster_sim = float(
-                    self.results.iloc[i]['num_semantic_clusters'] ==
-                    self.results.iloc[j]['num_semantic_clusters']
-                )
-                alignment_sim = 1 - abs(
-                    self.results.iloc[i]['bidirectional_alignment'] -
-                    self.results.iloc[j]['bidirectional_alignment']
-                )
-                similarity_matrix[i,j] = (cluster_sim + alignment_sim) / 2
-        
-        sns.heatmap(
-            similarity_matrix,
-            cmap='YlOrRd',
-            xticklabels=self.results.index,
-            yticklabels=self.results.index
-        )
-        plt.title('Solution Similarity Matrix')
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.experiment_dir, "solution_similarity_matrix.png"))
-        plt.close()
-
-    def generate_advanced_metrics(self):
-        """Calculate advanced performance metrics"""
-        metrics = {
-            'entropy_pass_correlation': np.corrcoef(
-                self.results['semantic_entropy'],
-                self.results['pass_at_k']
-            )[0,1],
-            'cluster_efficiency': np.mean(
-                self.results['pass_at_k'] / 
-                self.results['num_semantic_clusters']
-            ),
-            'solution_diversity_score': np.mean(
-                self.results['semantic_diversity'] * 
-                self.results['pass_at_k']
-            ),
-            'alignment_balance_score': 1 - abs(
-                np.mean(self.results['canonical_alignment'] - 
-                       self.results['reverse_alignment'])
-            ),
-            'entropy_stability_index': 1 - (
-                np.std(self.results['semantic_entropy']) /
-                np.mean(self.results['semantic_entropy'])
+        if other_visualizer:
+            ax2.plot(
+                other_visualizer.results.loc[other_sorted_idx, "pass_at_k"],
+                color="darkred",
+                linestyle=":",
+                label=f"{other_visualizer.model_name} Pass@k",
             )
-        }
 
-    def generate_semantic_diversity_report(self):
-        """
-        Generate a detailed report on semantic diversity metrics with robust error handling
-        """
-        try:
-            metrics = {
-                'semantic_clusters_stats': {
-                    'mean': float(self.results['num_semantic_clusters'].mean()),
-                    'std': float(self.results['num_semantic_clusters'].std()),
-                    'max': int(self.results['num_semantic_clusters'].max()),
-                    'min': int(self.results['num_semantic_clusters'].min())
-                },
-                'diversity_vs_performance': float(np.corrcoef(
-                    self.results['semantic_diversity'],
-                    self.results['pass_at_k']
-                )[0,1]),
-                'entropy_correlations': {
-                    'semantic_vs_predictive': float(np.corrcoef(
-                        self.results['semantic_entropy'],
-                        self.results['predictive_entropy']
-                    )[0,1]),
-                    'semantic_vs_cluster': float(np.corrcoef(
-                        self.results['semantic_entropy'],
-                        self.results['cluster_size_std']
-                    )[0,1])
-                },
-                'alignment_balance': float(abs(
-                    self.results['canonical_alignment'].mean() -
-                    self.results['reverse_alignment'].mean()
-                ))
+        plt.title("Predictive Uncertainty vs Performance")
+        plt.xlabel("Problems (sorted by difficulty)")
+        plt.ylabel("Entropy")
+        ax2.set_ylabel("Pass@k")
+
+        # Combine legends
+        lines1, labels1 = plt.gca().get_legend_handles_labels()
+        lines2, labels2 = ax2.get_legend_handles_labels()
+        ax2.legend(
+            lines1 + lines2,
+            labels1 + labels2,
+            loc="center left",
+            bbox_to_anchor=(1.15, 0.5),
+        )
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(self.experiment_dir, "predictive_uncertainty_comparison.png"),
+            bbox_inches="tight",
+        )
+        plt.close()
+
+    def plot_solution_diversity_comparison(self, other_visualizer=None):
+        """Plot 2: Solution diversity comparison between models"""
+        plt.figure(figsize=(12, 6))
+
+        # Create scatter plot for this model
+        plt.scatter(
+            self.results["semantic_diversity"],
+            self.results["num_semantic_clusters"],
+            alpha=0.6,
+            label=self.model_name,
+            s=self.results["largest_cluster_size"] * 100,
+        )
+
+        if other_visualizer:
+            plt.scatter(
+                other_visualizer.results["semantic_diversity"],
+                other_visualizer.results["num_semantic_clusters"],
+                alpha=0.6,
+                label=other_visualizer.model_name,
+                s=other_visualizer.results["largest_cluster_size"] * 100,
+            )
+
+        plt.title("Solution Diversity Comparison")
+        plt.xlabel("Semantic Diversity")
+        plt.ylabel("Number of Semantic Clusters")
+        plt.legend()
+
+        # Add text annotations for averages
+        avg_div = self.results["semantic_diversity"].mean()
+        avg_clusters = self.results["num_semantic_clusters"].mean()
+        plt.axvline(x=avg_div, color="blue", linestyle="--", alpha=0.3)
+        plt.axhline(y=avg_clusters, color="blue", linestyle="--", alpha=0.3)
+
+        if other_visualizer:
+            other_avg_div = other_visualizer.results["semantic_diversity"].mean()
+            other_avg_clusters = other_visualizer.results[
+                "num_semantic_clusters"
+            ].mean()
+            plt.axvline(x=other_avg_div, color="orange", linestyle="--", alpha=0.3)
+            plt.axhline(y=other_avg_clusters, color="orange", linestyle="--", alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(self.experiment_dir, "solution_diversity_comparison.png")
+        )
+        plt.close()
+
+    def plot_uncertainty_calibration_comparison(self, other_visualizer=None):
+        """Plot 3: Uncertainty calibration comparison between models"""
+        plt.figure(figsize=(12, 6))
+
+        # Calculate calibration curve for this model
+        confidence_bins = pd.qcut(
+            self.results["majority_solution_frequency"], q=10, labels=False
+        )
+        calibration_data = pd.DataFrame(
+            {
+                "confidence": self.results["majority_solution_frequency"],
+                "performance": self.results["pass_at_k"],
+                "bin": confidence_bins,
             }
-            
-            # Ensure all values are JSON serializable
-            metrics = convert_to_native_types(metrics)
-            
-            # Save report with error handling
-            report_file = os.path.join(self.experiment_dir, "semantic_diversity_report.json")
-            try:
-                with open(report_file, 'w') as f:
-                    json.dump(metrics, f, indent=2)
-            except TypeError as e:
-                logging.error(f"JSON serialization error in diversity report: {str(e)}")
-                # Attempt to identify problematic values
-                for key, value in metrics.items():
-                    try:
-                        json.dumps({key: value})
-                    except TypeError:
-                        logging.error(f"Non-serializable value in key '{key}': {type(value)}")
-            
-            return metrics
-        
-        except Exception as e:
-            logging.error(f"Error generating semantic diversity report: {str(e)}")
-            return {}
+        )
+        bin_stats = (
+            calibration_data.groupby("bin")
+            .agg({"confidence": "mean", "performance": "mean"})
+            .reset_index()
+        )
 
-    def generate_summary_statistics(self):
-        """Generate and save summary statistics"""
-        summary_stats = self.results.describe()
-        summary_stats.to_csv(os.path.join(self.experiment_dir, "summary_statistics.csv"))
-        return summary_stats
+        # Plot perfect calibration line
+        plt.plot([0, 1], [0, 1], "r--", label="Perfect Calibration")
+
+        # Plot calibration curves
+        plt.plot(
+            bin_stats["confidence"],
+            bin_stats["performance"],
+            "o-",
+            label=f"{self.model_name} Calibration",
+        )
+
+        if other_visualizer:
+            other_confidence_bins = pd.qcut(
+                other_visualizer.results["majority_solution_frequency"],
+                q=10,
+                labels=False,
+            )
+            other_calibration_data = pd.DataFrame(
+                {
+                    "confidence": other_visualizer.results[
+                        "majority_solution_frequency"
+                    ],
+                    "performance": other_visualizer.results["pass_at_k"],
+                    "bin": other_confidence_bins,
+                }
+            )
+            other_bin_stats = (
+                other_calibration_data.groupby("bin")
+                .agg({"confidence": "mean", "performance": "mean"})
+                .reset_index()
+            )
+
+            plt.plot(
+                other_bin_stats["confidence"],
+                other_bin_stats["performance"],
+                "s-",
+                label=f"{other_visualizer.model_name} Calibration",
+            )
+
+        plt.title("Uncertainty Calibration Comparison")
+        plt.xlabel("Model Confidence (Majority Solution Frequency)")
+        plt.ylabel("Actual Performance (Pass@k)")
+        plt.legend()
+        plt.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(self.experiment_dir, "uncertainty_calibration_comparison.png")
+        )
+        plt.close()
+
 
 @dataclass
 class ErrorStats:
     """Statistics for different types of errors encountered during final test attempts."""
+
     syntax_errors: int = 0
     type_errors: int = 0
     assertion_errors: int = 0
@@ -459,6 +268,7 @@ class ErrorStats:
     runtime_errors: int = 0
     indentation_errors: int = 0
     total_samples: int = 0
+
 
 class ErrorTracker:
     """Tracks errors from final test attempts across all problems in the dataset."""
@@ -501,16 +311,15 @@ class ErrorTracker:
         """Get overall error statistics."""
         return asdict(self.total_errors)
 
+
 def setup_logging(experiment_dir):
     """Configure logging with detailed formatting and both file and console handlers"""
     log_filename = os.path.join(experiment_dir, "humaneval.log")
-    
+
     file_formatter = logging.Formatter(
         "%(asctime)s | %(levelname)-8s | %(filename)s:%(lineno)d | %(funcName)s | %(message)s"
     )
-    console_formatter = logging.Formatter(
-        "%(asctime)s | %(levelname)-8s | %(message)s"
-    )
+    console_formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s")
 
     file_handler = logging.FileHandler(log_filename)
     file_handler.setLevel(logging.DEBUG)
@@ -527,6 +336,7 @@ def setup_logging(experiment_dir):
 
     logging.info(f"Logging initialized. Log file: {log_filename}")
     return log_filename
+
 
 def extract_and_fix_function(code, entry_point):
     """Helper function to extract and fix a function definition"""
@@ -596,22 +406,23 @@ def extract_and_fix_function(code, entry_point):
 
     return code
 
+
 def evaluate_model(
-    model, 
-    tokenizer, 
-    dataset, 
-    num_problems, 
-    n_samples, 
-    k, 
+    model,
+    tokenizer,
+    dataset,
+    num_problems,
+    n_samples,
+    k,
     entailment_model,
-    experiment_dir
+    experiment_dir,
 ):
     """
     Enhanced evaluation function with additional metrics and visualization
     """
     results = []
     error_tracker = ErrorTracker()
-    
+
     for idx in tqdm(range(num_problems)):
         torch.cuda.empty_cache()
         gc.collect()
@@ -627,12 +438,12 @@ def evaluate_model(
             n_samples,
             k,
             entailment_model,
-            error_tracker
+            error_tracker,
         )
-        
+
         if metrics:
             results.append(metrics)
-            
+
             # Log metrics
             logging.info(f"\nProblem {idx} Results:")
             for key, value in metrics.items():
@@ -642,36 +453,21 @@ def evaluate_model(
     # Generate visualizations
     visualizer = ResultsVisualizer(results, experiment_dir)
     try:
-        visualizer.plot_metric_correlations()
-        visualizer.plot_metrics_over_problems()
-        visualizer.plot_error_distributions()
-        visualizer.plot_alignment_triangle()
-        visualizer.plot_entropy_landscape()
-        visualizer.plot_alignment_progression()
-        visualizer.plot_entropy_pass_trajectory()
-        visualizer.plot_solution_quality_matrix()
-        visualizer.plot_entropy_decomposition()
-        visualizer.calculate_cluster_stability()
-        visualizer.plot_metric_distribution('semantic_entropy', 'Semantic Entropy Distribution')
-        visualizer.plot_metric_distribution('predictive_entropy', 'Predictive Entropy Distribution')
-
-        visualizer.plot_solution_similarity_matrix()
-        diversity_metrics = visualizer.generate_semantic_diversity_report()
-        summary_stats = visualizer.generate_summary_statistics()
-        logging.info(f"Generated summary statistics:\n{summary_stats}")
-        logging.info(f"Generated semantic diversity report:\n{diversity_metrics}")
-
+        visualizer.plot_solution_diversity_comparison()
+        visualizer.plot_uncertainty_calibration_comparison()
+        visualizer.plot_predictive_uncertainty_comparison()
         # Save detailed results
         results_file = os.path.join(experiment_dir, "detailed_results.json")
         with open(results_file, "w") as f:
             json.dump(results, f, indent=2)
-            
+
     except Exception as e:
         logging.error(f"Error generating visualizations: {str(e)}")
 
     # Calculate and return aggregate metrics
     aggregate_metrics = calculate_aggregate_metrics(results)
     return aggregate_metrics, results, error_tracker.get_total_stats()
+
 
 def extract_function_body(code_string: str) -> Optional[str]:
     """
@@ -752,7 +548,8 @@ def extract_function_body(code_string: str) -> Optional[str]:
     except Exception as e:
         logging.error(f"Error in function body extraction: {e}")
         return None
-    
+
+
 @timeout_decorator.timeout(10)  # 5 second timeout for execution
 def execute_test_case(func_obj, test_case, test_env):
     """Execute a single test case and return True if it passes."""
@@ -773,6 +570,7 @@ def execute_test_case(func_obj, test_case, test_env):
     except Exception as e:
         logging.error(f"Error executing test case: {type(e).__name__}: {str(e)}")
         return False
+
 
 def create_test_env():
     return {
@@ -837,6 +635,7 @@ def try_run_tests(
             error_tracker.add_error(problem_idx, type(e).__name__)
         return False
 
+
 def calculate_aggregate_metrics(results):
     """Helper function to calculate aggregate metrics across all problems"""
     return {
@@ -871,6 +670,7 @@ def calculate_aggregate_metrics(results):
         ),
     }
 
+
 def convert_to_native_types(obj):
     """Convert numpy types to native Python types for JSON serialization"""
     if isinstance(obj, np.integer):
@@ -883,34 +683,32 @@ def convert_to_native_types(obj):
         return {key: convert_to_native_types(value) for key, value in obj.items()}
     elif isinstance(obj, list):
         return [convert_to_native_types(item) for item in obj]
-    elif isinstance(obj, (np.int64, np.int32)):  # Add explicit handling for numpy integer types
+    elif isinstance(
+        obj, (np.int64, np.int32)
+    ):  # Add explicit handling for numpy integer types
         return int(obj)
-    elif isinstance(obj, (np.float64, np.float32)):  # Add explicit handling for numpy float types
+    elif isinstance(
+        obj, (np.float64, np.float32)
+    ):  # Add explicit handling for numpy float types
         return float(obj)
     return obj
 
+
 def evaluate_problem(
-    model,
-    tokenizer,
-    problem,
-    idx,
-    n_samples,
-    k,
-    entailment_model,
-    error_tracker
+    model, tokenizer, problem, idx, n_samples, k, entailment_model, error_tracker
 ):
     """Evaluate a single problem with enhanced metrics"""
     question = problem["question"]
     canonical_solution = problem["canonical_solution"]
     entry_point = problem["entry_point"]
     test_code = problem["test_code"]
-    
+
     # Store all solutions and their scores
     raw_solutions = []
     processed_solutions = []
     solution_log_probs = []
     correct_samples = 0
-    
+
     try:
         # Generate solutions using branching method
         responses = generate_branching_responses(
@@ -918,13 +716,13 @@ def evaluate_problem(
             tokenizer=tokenizer,
             prompt=question,
             max_length=256,
-            num_branches=n_samples
+            num_branches=n_samples,
         )
 
         # Process each generated response
         for response, confidence_score, log_prob in responses:
             error_tracker.increment_total(idx)
-            
+
             raw_solutions.append(response)
             scaled_log_prob = np.clip(log_prob, -10.0, 0.0)
             solution_log_probs.append(scaled_log_prob)
@@ -932,8 +730,7 @@ def evaluate_problem(
             # Extract and process function
             if "def " + entry_point in response:
                 generated_code = extract_and_fix_function(
-                    response[response.find("def " + entry_point):],
-                    entry_point
+                    response[response.find("def " + entry_point) :], entry_point
                 )
                 if generated_code:
                     processed_solutions.append(generated_code)
@@ -947,12 +744,7 @@ def evaluate_problem(
             if generated_code:
                 test_env = create_test_env()
                 if try_run_tests(
-                    generated_code,
-                    entry_point,
-                    test_code,
-                    test_env,
-                    error_tracker,
-                    idx
+                    generated_code, entry_point, test_code, test_env, error_tracker, idx
                 ):
                     correct_samples += 1
                     continue
@@ -962,7 +754,7 @@ def evaluate_problem(
             processed_solutions,
             canonical_solution,
             solution_log_probs,
-            entailment_model
+            entailment_model,
         )
 
         # Calculate pass@k
@@ -970,16 +762,24 @@ def evaluate_problem(
 
         # Additional code-specific metrics
         code_metrics = {
-            'mean_solution_length': np.mean([len(sol) for sol in processed_solutions]) if processed_solutions else 0,
-            'solution_length_std': np.std([len(sol) for sol in processed_solutions]) if processed_solutions else 0,
-            'successful_ratio': correct_samples / n_samples if n_samples > 0 else 0,
+            "mean_solution_length": (
+                np.mean([len(sol) for sol in processed_solutions])
+                if processed_solutions
+                else 0
+            ),
+            "solution_length_std": (
+                np.std([len(sol) for sol in processed_solutions])
+                if processed_solutions
+                else 0
+            ),
+            "successful_ratio": correct_samples / n_samples if n_samples > 0 else 0,
         }
 
         result = {
-            'problem_id': idx,
-            'pass_at_k': pass_at_k,
-            'error_stats': error_tracker.get_problem_stats(idx),
-            'semantic_metrics': {**semantic_metrics, **code_metrics}
+            "problem_id": idx,
+            "pass_at_k": pass_at_k,
+            "error_stats": error_tracker.get_problem_stats(idx),
+            "semantic_metrics": {**semantic_metrics, **code_metrics},
         }
         # Convert numpy types to native Python types before returning
         return convert_to_native_types(result)
@@ -987,7 +787,8 @@ def evaluate_problem(
     except Exception as e:
         logging.error(f"Error in problem evaluation: {str(e)}")
         return None
-    
+
+
 def assert_wrapper(condition, *args, **kwargs):
     """Custom assert function that just raises AssertionError on failure."""
     if not condition:
@@ -1020,10 +821,7 @@ def calculate_pass_at_k(n_samples: int, n_correct: int, k: int) -> float:
 
 
 def calculate_semantic_metrics(
-    processed_solutions,
-    canonical_solution,
-    solution_log_probs,
-    entailment_model
+    processed_solutions, canonical_solution, solution_log_probs, entailment_model
 ):
     """Calculate semantic metrics for code solutions"""
     if not processed_solutions:
@@ -1043,23 +841,19 @@ def calculate_semantic_metrics(
         # Calculate semantic clustering
         semantic_ids = get_semantic_ids(solution_bodies, entailment_model)
         semantic_cluster_counts = np.bincount(semantic_ids)
-        
+
         # Calculate entailment scores
         canonical_alignments = []
         reverse_alignments = []
-        
+
         for solution in solution_bodies:
             canon_align = context_entails_response(
-                canonical_solution,
-                [solution],
-                entailment_model
+                canonical_solution, [solution], entailment_model
             )
             canonical_alignments.append(canon_align)
 
             rev_align = context_entails_response(
-                solution,
-                [canonical_solution],
-                entailment_model
+                solution, [canonical_solution], entailment_model
             )
             reverse_alignments.append(rev_align)
 
@@ -1069,22 +863,24 @@ def calculate_semantic_metrics(
         bidirectional = (canonical_alignment + reverse_alignment) / 2
 
         return {
-            'semantic_entropy': cluster_assignment_entropy(semantic_ids),
-            'predictive_entropy': predictive_entropy(solution_log_probs),
-            'predictive_entropy_rao': predictive_entropy_rao(solution_log_probs),
-            'num_semantic_clusters': len(set(semantic_ids)),
-            'largest_cluster_size': max(semantic_cluster_counts),
-            'cluster_size_std': np.std(semantic_cluster_counts),
-            'canonical_alignment': canonical_alignment,
-            'reverse_alignment': reverse_alignment,
-            'bidirectional_alignment': bidirectional,
-            'semantic_diversity': len(set(semantic_ids)) / len(semantic_ids),
-            'majority_solution_frequency': max(semantic_cluster_counts) / len(semantic_ids)
+            "semantic_entropy": cluster_assignment_entropy(semantic_ids),
+            "predictive_entropy": predictive_entropy(solution_log_probs),
+            "predictive_entropy_rao": predictive_entropy_rao(solution_log_probs),
+            "num_semantic_clusters": len(set(semantic_ids)),
+            "largest_cluster_size": max(semantic_cluster_counts),
+            "cluster_size_std": np.std(semantic_cluster_counts),
+            "canonical_alignment": canonical_alignment,
+            "reverse_alignment": reverse_alignment,
+            "bidirectional_alignment": bidirectional,
+            "semantic_diversity": len(set(semantic_ids)) / len(semantic_ids),
+            "majority_solution_frequency": max(semantic_cluster_counts)
+            / len(semantic_ids),
         }
 
     except Exception as e:
         logging.error(f"Error calculating semantic metrics: {str(e)}")
         return {}
+
 
 def main():
     # Create experiment directory and setup logging
@@ -1115,17 +911,17 @@ def main():
             n_samples=10,
             k=2,
             entailment_model=entailment_model,
-            experiment_dir=experiment_dir
+            experiment_dir=experiment_dir,
         )
 
         # Save final results
         results = {
-            'model_name': model_name,
-            'aggregate_metrics': convert_to_native_types(aggregate_metrics),
-            'timestamp': datetime.now().isoformat(),
-            'num_samples': len(dataset),
-            'error_statistics': convert_to_native_types(error_stats),
-            'detailed_results': convert_to_native_types(detailed_results)
+            "model_name": model_name,
+            "aggregate_metrics": convert_to_native_types(aggregate_metrics),
+            "timestamp": datetime.now().isoformat(),
+            "num_samples": len(dataset),
+            "error_statistics": convert_to_native_types(error_stats),
+            "detailed_results": convert_to_native_types(detailed_results),
         }
 
         results_file = os.path.join(experiment_dir, "final_results.json")
@@ -1136,19 +932,26 @@ def main():
         logging.info(f"Results saved to: {results_file}")
         logging.info(f"Experiment directory: {experiment_dir}")
         logging.info(f"Log file: {log_filename}")
-        
+
         # Print key metrics
         logging.info("\nKey Metrics:")
         logging.info(f"Mean pass@k: {aggregate_metrics['mean_pass_at_k']:.2f}")
-        logging.info(f"Mean semantic entropy: {aggregate_metrics['mean_semantic_entropy']:.2f}")
-        logging.info(f"Mean predictive entropy: {aggregate_metrics['mean_predictive_entropy']:.2f}")
-        logging.info(f"Mean canonical alignment: {aggregate_metrics['mean_canonical_alignment']:.2f}")
+        logging.info(
+            f"Mean semantic entropy: {aggregate_metrics['mean_semantic_entropy']:.2f}"
+        )
+        logging.info(
+            f"Mean predictive entropy: {aggregate_metrics['mean_predictive_entropy']:.2f}"
+        )
+        logging.info(
+            f"Mean canonical alignment: {aggregate_metrics['mean_canonical_alignment']:.2f}"
+        )
         logging.info(f"\nError Statistics:")
         logging.info(json.dumps(error_stats, indent=2))
 
     except Exception as e:
         logging.critical(f"Critical error in main execution: {str(e)}", exc_info=True)
         raise
+
 
 if __name__ == "__main__":
     main()
