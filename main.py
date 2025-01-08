@@ -21,6 +21,7 @@ import timeout_decorator
 import ast
 from model import (
     CodeAwareDeberta,
+    EntailmentDeberta,
     generate_branching_responses,
     load_model_and_tokenizer,
 )
@@ -899,7 +900,7 @@ def main():
         # Load models
         logging.info("Loading models...")
         model, tokenizer = load_model_and_tokenizer(model_name)
-        entailment_model = CodeAwareDeberta()
+        entailment_model = EntailmentDeberta()
 
         # Run evaluation
         logging.info("Starting evaluation...")
