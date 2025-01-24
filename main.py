@@ -24,9 +24,46 @@ from scores import (
 )
 import logging
 import gc
+import os
 
 logging.basicConfig(level=logging.INFO)
 
+# Create results directory
+RESULTS_DIR = "results"
+os.makedirs(RESULTS_DIR, exist_ok=True)
+
+
+def create_experiment_dir():
+    """Create a timestamped directory for the current experiment"""
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    experiment_dir = os.path.join(RESULTS_DIR, f"humaneval_{timestamp}")
+    os.makedirs(experiment_dir, exist_ok=True)
+    return experiment_dir
+
+def setup_logging(experiment_dir):
+    """Configure logging with detailed formatting and both file and console handlers"""
+    log_filename = os.path.join(experiment_dir, "humaneval.log")
+
+    file_formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)-8s | %(filename)s:%(lineno)d | %(funcName)s | %(message)s"
+    )
+    console_formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(message)s")
+
+    file_handler = logging.FileHandler(log_filename)
+    file_handler.setLevel(logging.DEBUG)
+    file_handler.setFormatter(file_formatter)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(console_formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.DEBUG)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+
+    logging.info(f"Logging initialized. Log file: {log_filename}")
+    return log_filename
 
 @dataclass
 class ErrorStats:
@@ -256,10 +293,10 @@ def evaluate_model(
     n_samples,
     k,
     entailment_model,
+    experiment_dir,
 ):
     """
-    Evaluate the model on the dataset with error tracking and semantic uncertainty metrics.
-    Now computes metrics for all generated solutions, regardless of test passage.
+    Enhanced evaluation function with additional metrics and visualization
     """
     results = []
     error_tracker = ErrorTracker()
@@ -270,294 +307,229 @@ def evaluate_model(
         logging.info(f"\n{'='*50}")
         logging.info(f"Problem {idx}")
 
-        item = dataset[idx]
-        question = item["question"]
-        canonical_solution = item["canonical_solution"]
-        entry_point = item["entry_point"]
-        test_code = item["test_code"]
-        correct_samples = 0
+        problem = dataset[idx]
+        metrics = evaluate_problem(
+            approx_model,
+            target_model,
+            tokenizer,
+            problem,
+            idx,
+            n_samples,
+            k,
+            entailment_model,
+            error_tracker,
+        )
 
-        try:
-            inputs = tokenizer(
-                question,
-                return_tensors="pt",
-                max_length=512,
-                truncation=True,
-            ).to(target_model.device)
-            logging.debug(f"Tokenized input length: {inputs['input_ids'].size()}")
-        except Exception as e:
-            logging.error(f"Tokenization failed: {str(e)}")
-            raise
+        if metrics:
+            results.append(metrics)
 
-        # Store all generated solutions and their scores for semantic analysis
-        generated_solutions = []
-        solution_log_probs = []
+            # Log metrics
+            logging.info(f"\nProblem {idx} Results:")
+            for key, value in metrics.items():
+                if isinstance(value, (int, float)) and not isinstance(value, bool):
+                    logging.info(f"{key}: {value:.4f}")
 
-        try:
-            # Sampling for more diverse solutions
-            outputs, log_probabilities = speculative_sampling(
-                inputs.input_ids,
-                approx_model,
-                target_model,
-                max_len=1024,
-                gamma=4,
-                temperature=0.6,
-            )
+        # Save detailed results
+        results_file = os.path.join(experiment_dir, "detailed_results.json")
+        with open(results_file, "w") as f:
+            json.dump(results, f, indent=2)
 
-            # For each sequence in the batch
-            for batch_idx, generated_ids in enumerate(outputs.sequences):
-                error_tracker.increment_total(idx)
+    # Calculate and return aggregate metrics
+    aggregate_metrics = calculate_aggregate_metrics(results)
+    return aggregate_metrics, results, error_tracker.get_total_stats()
 
-                response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-                logging.info(f"\nRaw generated code:\n{response}\n")
-                generated_solutions.append(response)
-                solution_log_probs.append(log_probabilities)
 
-                # Try running tests on raw response
+def extract_and_fix_function(code, entry_point):
+    """Helper function to extract and fix a function definition"""
+    try:
+        # Try AST parsing
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == entry_point:
+                end = node.end_lineno
+                return "\n".join(code.split("\n")[:end])
+    except SyntaxError:
+        # Fallback: manual parsing
+        lines = code.split("\n")
+        result = []
+        in_docstring = False
+        docstring_delim = 0
+
+        for line in lines:
+            stripped = line.strip()
+            if '"""' in line or "'''" in line:
+                docstring_delim += line.count('"""') + line.count("'''")
+                in_docstring = docstring_delim % 2 != 0
+            if (
+                not in_docstring
+                and stripped
+                and not (
+                    line[0].isspace()
+                    or stripped.startswith(
+                        ("def", "return", "#", '"', "'", "assert", "test_", "Test")
+                    )
+                    or ">>>" in line
+                )
+            ):
+                break
+            result.append(line)
+
+        code = "\n".join(result)
+
+        # Fix missing syntax elements
+        if code and not code.strip().endswith(":"):
+            if ":" not in code:
+                code += ":"
+        if code and "\n" not in code:
+            code += "\n    pass"
+
+        # Fix indentation
+        if code:
+            lines = code.split("\n")
+            fixed_lines = []
+            base_indent = None
+            for line in lines:
+                if line.strip():
+                    if base_indent is None and line.startswith("def"):
+                        base_indent = len(line) - len(line.lstrip())
+                    if base_indent is not None:
+                        stripped = (
+                            line[base_indent:]
+                            if line.startswith(" " * base_indent)
+                            else line
+                        )
+                        fixed_lines.append(
+                            "    " + stripped
+                            if stripped.strip() and not stripped.startswith("def")
+                            else stripped
+                        )
+            return "\n".join(fixed_lines)
+
+    return code
+
+
+def evaluate_problem(
+    approx_model,
+    target_model,
+    tokenizer,
+    problem,
+    idx,
+    n_samples,
+    k,
+    entailment_model,
+    error_tracker,
+):
+    """Evaluate a single problem with enhanced metrics"""
+    question = problem["question"]
+    canonical_solution = problem["canonical_solution"]
+    entry_point = problem["entry_point"]
+    test_code = problem["test_code"]
+
+    # Store all solutions and their scores
+    raw_solutions = []
+    processed_solutions = []
+    solution_log_probs = []
+    correct_samples = 0
+
+    try:
+        inputs = tokenizer(
+            question,
+            return_tensors="pt",
+            max_length=512,
+            truncation=True,
+        ).to(target_model.device)
+        logging.debug(f"Tokenized input length: {inputs['input_ids'].size()}")
+    except Exception as e:
+        logging.error(f"Tokenization failed: {str(e)}")
+        raise
+
+    try:
+        # Generate solutions using branching method
+        responses, log_probs = speculative_sampling(
+            prefix=inputs.input_ids,
+            approx_model=approx_model,
+            target_model=target_model,
+            max_len=256,
+            gamma=4,
+            temperature=0.6,
+            top_k=0,
+            top_p=0,
+            verbose=False,
+        )
+
+        # Process each generated response
+        for response, log_prob in responses:
+            error_tracker.increment_total(idx)
+
+            raw_solutions.append(response)
+            scaled_log_prob = np.clip(log_prob, -10.0, 0.0)
+            solution_log_probs.append(scaled_log_prob)
+
+            # Extract and process function
+            if "def " + entry_point in response:
+                generated_code = extract_and_fix_function(
+                    response[response.find("def " + entry_point) :], entry_point
+                )
+                if generated_code:
+                    processed_solutions.append(generated_code)
+
+            # Run tests and track correctness
+            test_env = create_test_env()
+            if try_run_tests(response, entry_point, test_code, test_env):
+                correct_samples += 1
+                continue
+
+            if generated_code:
                 test_env = create_test_env()
-                if try_run_tests(response, entry_point, test_code, test_env):
+                if try_run_tests(
+                    generated_code, entry_point, test_code, test_env, error_tracker, idx
+                ):
                     correct_samples += 1
-                    logging.info("✓ Sample passed all tests on raw response")
                     continue
 
-                # Extract function and try fixes
-                generated_code = ""
-                if "def " + entry_point in response:
-                    start = response.find("def " + entry_point)
-                    generated_code = response[start:]
-
-                    # Try AST parsing
-                    try:
-                        tree = ast.parse(generated_code)
-                        for node in ast.walk(tree):
-                            if (
-                                isinstance(node, ast.FunctionDef)
-                                and node.name == entry_point
-                            ):
-                                end = node.end_lineno
-                                generated_code = "\n".join(
-                                    generated_code.split("\n")[:end]
-                                )
-                                break
-                    except SyntaxError:
-                        # Fallback: manual parsing
-                        lines = generated_code.split("\n")
-                        result = []
-                        in_docstring = False
-                        docstring_delim = 0
-
-                        for line in lines:
-                            stripped = line.strip()
-                            if '"""' in line or "'''" in line:
-                                docstring_delim += line.count('"""') + line.count("'''")
-                                in_docstring = docstring_delim % 2 != 0
-                            if (
-                                not in_docstring
-                                and stripped
-                                and not (
-                                    line[0].isspace()
-                                    or stripped.startswith(
-                                        (
-                                            "def",
-                                            "return",
-                                            "#",
-                                            '"',
-                                            "'",
-                                            "assert",
-                                            "test_",
-                                            "Test",
-                                        )
-                                    )
-                                    or ">>>" in line
-                                )
-                            ):
-                                break
-                            result.append(line)
-                        generated_code = "\n".join(result)
-
-                # Fix missing syntax elements
-                if generated_code and not generated_code.strip().endswith(":"):
-                    if ":" not in generated_code:
-                        generated_code += ":"
-                if generated_code and "\n" not in generated_code:
-                    generated_code += "\n    pass"
-
-                # Fix indentation as last resort
-                if generated_code:
-                    lines = generated_code.split("\n")
-                    fixed_lines = []
-                    base_indent = None
-                    for line in lines:
-                        if line.strip():
-                            if base_indent is None and line.startswith("def"):
-                                base_indent = len(line) - len(line.lstrip())
-                            if base_indent is not None:
-                                stripped = (
-                                    line[base_indent:]
-                                    if line.startswith(" " * base_indent)
-                                    else line
-                                )
-                                fixed_lines.append(
-                                    "    " + stripped
-                                    if stripped.strip()
-                                    and not stripped.startswith("def")
-                                    else stripped
-                                )
-
-                    fixed_code = "\n".join(fixed_lines)
-                    logging.info(f"\nFinal fixed code:\n{fixed_code}\n")
-
-                    # Update the stored solution with the fixed version
-                    generated_solutions[-1] = fixed_code
-
-                    # Try tests on fully fixed code
-                    test_env = create_test_env()
-                    if try_run_tests(
-                        fixed_code,
-                        entry_point,
-                        test_code,
-                        test_env,
-                        error_tracker,
-                        idx,
-                    ):
-                        correct_samples += 1
-                        logging.info("✓ Sample passed all tests after full fixing")
-                        continue
-
-                logging.info("✗ Sample failed all test attempts")
-
-        except Exception as e:
-            error_tracker.add_error(idx, type(e).__name__)
-            logging.error(f"Unexpected error: {type(e).__name__}: {str(e)}")
-            continue
-
-        # Calculate semantic metrics for all solutions
-        semantic_metrics = {}
-        logging.info(
-            f"\nCalculating semantic metrics for {len(generated_solutions)} solutions"
+        # Calculate semantic metrics
+        semantic_metrics = calculate_semantic_metrics(
+            processed_solutions,
+            canonical_solution,
+            solution_log_probs,
+            entailment_model,
         )
 
-        if generated_solutions:
-            logging.debug(
-                "Sample solution lengths: "
-                + str([len(sol) for sol in generated_solutions[:3]])
-                + "..."
-            )
-
-            # Calculate entropy metrics based on raw solutions first
-            semantic_ids = get_semantic_ids(generated_solutions, entailment_model)
-            logging.info(f"Number of semantic clusters: {len(set(semantic_ids))}")
-
-            semantic_entropy = cluster_assignment_entropy(semantic_ids)
-            logging.info(f"Semantic entropy: {semantic_entropy:.3f}")
-
-            logging.info(f"Solution log probs: {solution_log_probs}")
-
-            pred_entropy = predictive_entropy(solution_log_probs)
-            logging.info(f"Predictive entropy: {pred_entropy:.3f}")
-
-            pred_entropy_rao = predictive_entropy_rao(solution_log_probs)
-            logging.info(f"Predictive entropy Rao: {pred_entropy_rao:.3f}")
-
-            # Process generated solutions to extract function bodies
-            logging.info(f"Canonical solution: {canonical_solution}")
-            processed_solutions = []
-
-            for sol in generated_solutions:
-                implementation = extract_function_body(sol)
-                logging.info(f"Generated solution: {implementation}")
-                if implementation:
-                    processed_solutions.append(implementation)
-
-            if processed_solutions:
-                logging.info(
-                    f"Successfully extracted {len(processed_solutions)} implementations"
-                )
-                logging.debug(
-                    f"Extracted implementations: {processed_solutions[:3]}..."
-                )
-
-                # Calculate entailment for each solution individually
-                canonical_alignments = []
-                reverse_alignments = []
-
-                for solution in processed_solutions:
-                    # Measure if canonical solution entails the generated solution
-                    canon_align = context_entails_response(
-                        canonical_solution, [solution], entailment_model
-                    )
-                    canonical_alignments.append(canon_align)
-
-                    # Measure if generated solution entails the canonical solution
-                    rev_align = context_entails_response(
-                        solution, [canonical_solution], entailment_model
-                    )
-                    reverse_alignments.append(rev_align)
-
-                    logging.debug(
-                        f"Solution alignment scores - canonical: {canon_align:.3f}, reverse: {rev_align:.3f}"
-                    )
-
-                # Calculate average alignments
-                canonical_alignment = sum(canonical_alignments) / len(
-                    canonical_alignments
-                )
-                reverse_alignment = sum(reverse_alignments) / len(reverse_alignments)
-                bidirectional = (canonical_alignment + reverse_alignment) / 2
-
-                logging.info(
-                    f"Average canonical alignment score: {canonical_alignment:.3f}"
-                )
-                logging.info(
-                    f"Average reverse alignment score: {reverse_alignment:.3f}"
-                )
-                logging.info(
-                    f"Average bidirectional alignment score: {bidirectional:.3f}"
-                )
-            else:
-                logging.warning(
-                    "No valid function bodies extracted for alignment calculation"
-                )
-                canonical_alignment = 0.0
-                reverse_alignment = 0.0
-
-            # Store all metrics
-            semantic_metrics = {
-                "semantic_entropy": semantic_entropy,
-                "predictive_entropy": pred_entropy,
-                "predictive_entropy_rao": pred_entropy_rao,
-                "num_semantic_clusters": len(set(semantic_ids)),
-                "num_solutions": len(generated_solutions),
-                "num_processed_solutions": len(processed_solutions),
-                "canonical_alignment": canonical_alignment,
-                "reverse_alignment": reverse_alignment,
-                "bidirectional_alignment": (canonical_alignment + reverse_alignment)
-                / 2,
-            }
-
+        # Calculate pass@k
         pass_at_k = calculate_pass_at_k(n_samples, correct_samples, k)
-        results.append(
-            {
-                "problem_id": idx,
-                "pass_at_k": pass_at_k,
-                "error_stats": error_tracker.get_problem_stats(idx),
-                "semantic_metrics": semantic_metrics,
-            }
-        )
 
-        logging.info(f"Problem {idx} Results:")
-        logging.info(f"pass@{k}: {pass_at_k:.2f}")
-        if semantic_metrics:
-            logging.info(f"Semantic metrics: {semantic_metrics}")
-            logging.info(
-                f"Canonical solution alignment: {semantic_metrics['canonical_alignment']:.2f}"
-            )
-            logging.info(
-                f"Bidirectional alignment: {semantic_metrics['bidirectional_alignment']:.2f}"
-            )
+        # Additional code-specific metrics
+        code_metrics = {
+            "mean_solution_length": (
+                np.mean([len(sol) for sol in processed_solutions])
+                if processed_solutions
+                else 0
+            ),
+            "solution_length_std": (
+                np.std([len(sol) for sol in processed_solutions])
+                if processed_solutions
+                else 0
+            ),
+            "successful_ratio": correct_samples / n_samples if n_samples > 0 else 0,
+        }
 
-    # Calculate aggregate metrics
-    aggregate_metrics = {
+        result = {
+            "problem_id": idx,
+            "pass_at_k": pass_at_k,
+            "error_stats": error_tracker.get_problem_stats(idx),
+            "semantic_metrics": {**semantic_metrics, **code_metrics},
+        }
+        # Convert numpy types to native Python types before returning
+        return convert_to_native_types(result)
+
+    except Exception as e:
+        logging.error(f"Error in problem evaluation: {str(e)}")
+        return None
+
+
+def calculate_aggregate_metrics(results):
+    """Helper function to calculate aggregate metrics across all problems"""
+    return {
         "mean_pass_at_k": np.mean([r["pass_at_k"] for r in results]),
         "mean_semantic_entropy": np.mean(
             [
@@ -589,7 +561,90 @@ def evaluate_model(
         ),
     }
 
-    return aggregate_metrics, results, error_tracker.get_total_stats()
+
+def convert_to_native_types(obj):
+    """Convert numpy types to native Python types for JSON serialization"""
+    if isinstance(obj, np.integer):
+        return int(obj)
+    elif isinstance(obj, np.floating):
+        return float(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {key: convert_to_native_types(value) for key, value in obj.items()}
+    elif isinstance(obj, list):
+        return [convert_to_native_types(item) for item in obj]
+    elif isinstance(
+        obj, (np.int64, np.int32)
+    ):  # Add explicit handling for numpy integer types
+        return int(obj)
+    elif isinstance(
+        obj, (np.float64, np.float32)
+    ):  # Add explicit handling for numpy float types
+        return float(obj)
+    return obj
+
+
+def calculate_semantic_metrics(
+    processed_solutions, canonical_solution, solution_log_probs, entailment_model
+):
+    """Calculate semantic metrics for code solutions"""
+    if not processed_solutions:
+        return {}
+
+    try:
+        # Extract implementation bodies
+        solution_bodies = []
+        for sol in processed_solutions:
+            implementation = extract_function_body(sol)
+            if implementation:
+                solution_bodies.append(implementation)
+
+        if not solution_bodies:
+            return {}
+
+        # Calculate semantic clustering
+        semantic_ids = get_semantic_ids(solution_bodies, entailment_model)
+        semantic_cluster_counts = np.bincount(semantic_ids)
+
+        # Calculate entailment scores
+        canonical_alignments = []
+        reverse_alignments = []
+
+        for solution in solution_bodies:
+            canon_align = context_entails_response(
+                canonical_solution, [solution], entailment_model
+            )
+            canonical_alignments.append(canon_align)
+
+            rev_align = context_entails_response(
+                solution, [canonical_solution], entailment_model
+            )
+            reverse_alignments.append(rev_align)
+
+        # Calculate average alignments
+        canonical_alignment = statistics.mean(canonical_alignments)
+        reverse_alignment = statistics.mean(reverse_alignments)
+        bidirectional = (canonical_alignment + reverse_alignment) / 2
+
+        return {
+            "semantic_entropy": cluster_assignment_entropy(semantic_ids),
+            "predictive_entropy": predictive_entropy(solution_log_probs),
+            "predictive_entropy_rao": predictive_entropy_rao(solution_log_probs),
+            "num_semantic_clusters": len(set(semantic_ids)),
+            "largest_cluster_size": max(semantic_cluster_counts),
+            "cluster_size_std": np.std(semantic_cluster_counts),
+            "canonical_alignment": canonical_alignment,
+            "reverse_alignment": reverse_alignment,
+            "bidirectional_alignment": bidirectional,
+            "semantic_diversity": len(set(semantic_ids)) / len(semantic_ids),
+            "majority_solution_frequency": max(semantic_cluster_counts)
+            / len(semantic_ids),
+        }
+
+    except Exception as e:
+        logging.error(f"Error calculating semantic metrics: {str(e)}")
+        return {}
 
 
 def create_test_env():
@@ -682,6 +737,8 @@ def calculate_pass_at_k(n_samples: int, n_correct: int, k: int) -> float:
 
 
 def main():
+    experiment_dir = create_experiment_dir()
+    log_filename = setup_logging(experiment_dir)
     # Model parameters - Using a smaller model for the approximation
     target_model_name = "meta-llama/Llama-3.2-3B"
     approx_model_name = "meta-llama/Llama-3.2-1b"  # Smaller model for draft
@@ -713,6 +770,7 @@ def main():
         n_samples=10,
         k=5,
         entailment_model=entailment_model,
+        experiment_dir=experiment_dir,
     )
 
     # Print aggregate metrics
