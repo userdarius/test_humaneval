@@ -277,6 +277,18 @@ def evaluate_model(
         test_code = item["test_code"]
         correct_samples = 0
 
+        try:
+            inputs = tokenizer(
+                question,
+                return_tensors="pt",
+                max_length=512,
+                truncation=True,
+            ).to(target_model.device)
+            logging.debug(f"Tokenized input length: {inputs['input_ids'].size()}")
+        except Exception as e:
+            logging.error(f"Tokenization failed: {str(e)}")
+            raise
+
         # Store all generated solutions and their scores for semantic analysis
         generated_solutions = []
         solution_log_probs = []
@@ -284,7 +296,7 @@ def evaluate_model(
         try:
             # Sampling for more diverse solutions
             outputs, log_probabilities = speculative_sampling(
-                question,
+                inputs.input_ids,
                 approx_model,
                 target_model,
                 max_len=1024,
