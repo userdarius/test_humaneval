@@ -42,6 +42,7 @@ def create_experiment_dir():
     os.makedirs(experiment_dir, exist_ok=True)
     return experiment_dir
 
+
 def setup_logging(experiment_dir):
     """Configure logging with detailed formatting and both file and console handlers"""
     log_filename = os.path.join(experiment_dir, "humaneval.log")
@@ -66,6 +67,7 @@ def setup_logging(experiment_dir):
 
     logging.info(f"Logging initialized. Log file: {log_filename}")
     return log_filename
+
 
 @dataclass
 class ErrorStats:
@@ -446,25 +448,30 @@ def evaluate_problem(
         raise
 
     try:
-        # Generate solutions using branching method
-        responses, log_probs = speculative_sampling(
-            prefix=inputs.input_ids,
-            approx_model=approx_model,
-            target_model=target_model,
-            max_len=256,
-            gamma=4,
-            temperature=0.6,
-            top_k=0,
-            top_p=0,
-            verbose=False,
-        )
+        # Generate multiple samples
+        for _ in range(n_samples):
+            # Generate one solution using speculative sampling
+            output_ids, token_log_probs = speculative_sampling(
+                prefix=inputs.input_ids,
+                approx_model=approx_model,
+                target_model=target_model,
+                max_len=256,
+                gamma=4,
+                temperature=0.6,
+                top_k=0,
+                top_p=0,
+                verbose=False,
+            )
 
-        # Process each generated response
-        for response, log_prob in responses:
+            # Decode the generated tokens into text
+            response = tokenizer.decode(output_ids[0], skip_special_tokens=True)
+
+            # Calculate average log probability
+            avg_log_prob = np.mean(token_log_probs) if token_log_probs else 0.0
+
             error_tracker.increment_total(idx)
-
             raw_solutions.append(response)
-            scaled_log_prob = np.clip(log_prob, -10.0, 0.0)
+            scaled_log_prob = np.clip(avg_log_prob, -10.0, 0.0)
             solution_log_probs.append(scaled_log_prob)
 
             # Extract and process function
@@ -475,19 +482,24 @@ def evaluate_problem(
                 if generated_code:
                     processed_solutions.append(generated_code)
 
-            # Run tests and track correctness
-            test_env = create_test_env()
-            if try_run_tests(response, entry_point, test_code, test_env):
-                correct_samples += 1
-                continue
-
-            if generated_code:
+                # Run tests and track correctness
                 test_env = create_test_env()
-                if try_run_tests(
-                    generated_code, entry_point, test_code, test_env, error_tracker, idx
-                ):
+                if try_run_tests(response, entry_point, test_code, test_env):
                     correct_samples += 1
                     continue
+
+                if generated_code:
+                    test_env = create_test_env()
+                    if try_run_tests(
+                        generated_code,
+                        entry_point,
+                        test_code,
+                        test_env,
+                        error_tracker,
+                        idx,
+                    ):
+                        correct_samples += 1
+                        continue
 
         # Calculate semantic metrics
         semantic_metrics = calculate_semantic_metrics(

@@ -168,6 +168,7 @@ def speculative_sampling(
 
     return prefix, token_log_probs
 
+
 def load_approx_and_target_model_and_tokenizer(approx_model_name, target_model_name):
     approx_model = load_model(approx_model_name)
     target_model = load_model(target_model_name)
