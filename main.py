@@ -1,9 +1,8 @@
 import torch
 from data import get_dataset
-from model import load_model_and_tokenizer
+from model import speculative_sampling, load_approx_and_target_model_and_tokenizer
 from tqdm import tqdm
 import ast
-import inspect
 import contextlib
 import io
 import timeout_decorator
@@ -25,8 +24,6 @@ from scores import (
 )
 import logging
 import gc
-from model import SpeculativeSamplingModel
-
 
 logging.basicConfig(level=logging.INFO)
 
@@ -251,7 +248,14 @@ def calculate_sequence_log_prob(outputs, generated_ids, tokenizer):
 
 
 def evaluate_model(
-    model, tokenizer, dataset, num_problems, n_samples, k, entailment_model
+    approx_model,
+    target_model,
+    tokenizer,
+    dataset,
+    num_problems,
+    n_samples,
+    k,
+    entailment_model,
 ):
     """
     Evaluate the model on the dataset with error tracking and semantic uncertainty metrics.
@@ -259,7 +263,6 @@ def evaluate_model(
     """
     results = []
     error_tracker = ErrorTracker()
-
 
     for idx in tqdm(range(num_problems)):
         torch.cuda.empty_cache()
@@ -270,10 +273,6 @@ def evaluate_model(
         item = dataset[idx]
         question = item["question"]
         canonical_solution = item["canonical_solution"]
-        logging.info(f"Question length: {len(question)}")
-        logging.debug(f"Question preview: {question[:200]}...")
-        logging.info(f"Canonical solution length: {len(canonical_solution)}")
-        logging.debug(f"Canonical solution preview: {canonical_solution[:200]}...")
         entry_point = item["entry_point"]
         test_code = item["test_code"]
         correct_samples = 0
@@ -284,189 +283,136 @@ def evaluate_model(
 
         try:
             # Sampling for more diverse solutions
-            outputs = model.generate(
+            outputs, log_probabilities = speculative_sampling(
                 question,
+                approx_model,
+                target_model,
+                max_len=1024,
+                gamma=4,
                 temperature=0.6,
-                return_full=True
             )
 
-            # Calculate sequence log probability
-            if hasattr(outputs, "scores") and outputs.scores:
-                scores = outputs.scores
-                # For each sequence in the batch
-                for batch_idx in range(len(outputs.sequences)):
-                    error_tracker.increment_total(idx)
-                    generated_ids = outputs.sequences[batch_idx]
-                    log_prob = 0
-                    sequence_length = 0
+            # For each sequence in the batch
+            for batch_idx, generated_ids in enumerate(outputs.sequences):
+                error_tracker.increment_total(idx)
 
-                    # Get indices of non-padding tokens
-                    non_pad_indices = (
-                        (generated_ids != tokenizer.pad_token_id).nonzero().squeeze(-1)
-                    )
-                    if len(non_pad_indices) > 0:
-                        start_idx = non_pad_indices[0].item()
+                response = tokenizer.decode(generated_ids, skip_special_tokens=True)
+                logging.info(f"\nRaw generated code:\n{response}\n")
+                generated_solutions.append(response)
+                solution_log_probs.append(log_probabilities)
 
-                        for step, score in enumerate(scores):
-                            if isinstance(score, tuple):
-                                score = score[0]
-                            step_log_probs = torch.log_softmax(score, dim=-1)
+                # Try running tests on raw response
+                test_env = create_test_env()
+                if try_run_tests(response, entry_point, test_code, test_env):
+                    correct_samples += 1
+                    logging.info("✓ Sample passed all tests on raw response")
+                    continue
 
-                            # Only include if we're past the prompt
-                            if step + start_idx + 1 < len(generated_ids):
-                                token = generated_ids[step + start_idx + 1]
+                # Extract function and try fixes
+                generated_code = ""
+                if "def " + entry_point in response:
+                    start = response.find("def " + entry_point)
+                    generated_code = response[start:]
 
-                                # Skip padding tokens
-                                if token == tokenizer.pad_token_id:
-                                    continue
+                    # Try AST parsing
+                    try:
+                        tree = ast.parse(generated_code)
+                        for node in ast.walk(tree):
+                            if (
+                                isinstance(node, ast.FunctionDef)
+                                and node.name == entry_point
+                            ):
+                                end = node.end_lineno
+                                generated_code = "\n".join(
+                                    generated_code.split("\n")[:end]
+                                )
+                                break
+                    except SyntaxError:
+                        # Fallback: manual parsing
+                        lines = generated_code.split("\n")
+                        result = []
+                        in_docstring = False
+                        docstring_delim = 0
 
-                                # Get probability for this specific sequence's token
-                                log_prob_step = step_log_probs[batch_idx, token].item()
-
-                                # Weight important tokens more heavily
-                                if token in [
-                                    tokenizer.convert_tokens_to_ids(t)
-                                    for t in ["return", "while", "if", "for"]
-                                ]:
-                                    log_prob_step *= (
-                                        1.2  # Boost probability for structural tokens
+                        for line in lines:
+                            stripped = line.strip()
+                            if '"""' in line or "'''" in line:
+                                docstring_delim += line.count('"""') + line.count("'''")
+                                in_docstring = docstring_delim % 2 != 0
+                            if (
+                                not in_docstring
+                                and stripped
+                                and not (
+                                    line[0].isspace()
+                                    or stripped.startswith(
+                                        (
+                                            "def",
+                                            "return",
+                                            "#",
+                                            '"',
+                                            "'",
+                                            "assert",
+                                            "test_",
+                                            "Test",
+                                        )
                                     )
+                                    or ">>>" in line
+                                )
+                            ):
+                                break
+                            result.append(line)
+                        generated_code = "\n".join(result)
 
-                                if not np.isfinite(log_prob_step):
-                                    log_prob_step = -10.0
+                # Fix missing syntax elements
+                if generated_code and not generated_code.strip().endswith(":"):
+                    if ":" not in generated_code:
+                        generated_code += ":"
+                if generated_code and "\n" not in generated_code:
+                    generated_code += "\n    pass"
 
-                                log_prob += log_prob_step
-                                sequence_length += 1
+                # Fix indentation as last resort
+                if generated_code:
+                    lines = generated_code.split("\n")
+                    fixed_lines = []
+                    base_indent = None
+                    for line in lines:
+                        if line.strip():
+                            if base_indent is None and line.startswith("def"):
+                                base_indent = len(line) - len(line.lstrip())
+                            if base_indent is not None:
+                                stripped = (
+                                    line[base_indent:]
+                                    if line.startswith(" " * base_indent)
+                                    else line
+                                )
+                                fixed_lines.append(
+                                    "    " + stripped
+                                    if stripped.strip()
+                                    and not stripped.startswith("def")
+                                    else stripped
+                                )
 
-                        if sequence_length > 0:
-                            log_prob = log_prob / sequence_length
-                            # Remove this scaling factor as it's reducing the differences
-                            # log_prob = log_prob / 5.0
+                    fixed_code = "\n".join(fixed_lines)
+                    logging.info(f"\nFinal fixed code:\n{fixed_code}\n")
 
-                        # Use a wider range for clipping
-                        log_prob = np.clip(log_prob, -10.0, 0.0)
-                    else:
-                        log_prob = 0.0
+                    # Update the stored solution with the fixed version
+                    generated_solutions[-1] = fixed_code
 
-                    response = tokenizer.decode(generated_ids, skip_special_tokens=True)
-                    logging.info(f"\nRaw generated code:\n{response}\n")
-                    generated_solutions.append(response)
-                    solution_log_probs.append(log_prob)
-
-                    # Try running tests on raw response
+                    # Try tests on fully fixed code
                     test_env = create_test_env()
-                    if try_run_tests(response, entry_point, test_code, test_env):
+                    if try_run_tests(
+                        fixed_code,
+                        entry_point,
+                        test_code,
+                        test_env,
+                        error_tracker,
+                        idx,
+                    ):
                         correct_samples += 1
-                        logging.info("✓ Sample passed all tests on raw response")
+                        logging.info("✓ Sample passed all tests after full fixing")
                         continue
 
-                    # Extract function and try fixes
-                    generated_code = ""
-                    if "def " + entry_point in response:
-                        start = response.find("def " + entry_point)
-                        generated_code = response[start:]
-
-                        # Try AST parsing
-                        try:
-                            tree = ast.parse(generated_code)
-                            for node in ast.walk(tree):
-                                if (
-                                    isinstance(node, ast.FunctionDef)
-                                    and node.name == entry_point
-                                ):
-                                    end = node.end_lineno
-                                    generated_code = "\n".join(
-                                        generated_code.split("\n")[:end]
-                                    )
-                                    break
-                        except SyntaxError:
-                            # Fallback: manual parsing
-                            lines = generated_code.split("\n")
-                            result = []
-                            in_docstring = False
-                            docstring_delim = 0
-
-                            for line in lines:
-                                stripped = line.strip()
-                                if '"""' in line or "'''" in line:
-                                    docstring_delim += line.count('"""') + line.count(
-                                        "'''"
-                                    )
-                                    in_docstring = docstring_delim % 2 != 0
-                                if (
-                                    not in_docstring
-                                    and stripped
-                                    and not (
-                                        line[0].isspace()
-                                        or stripped.startswith(
-                                            (
-                                                "def",
-                                                "return",
-                                                "#",
-                                                '"',
-                                                "'",
-                                                "assert",
-                                                "test_",
-                                                "Test",
-                                            )
-                                        )
-                                        or ">>>" in line
-                                    )
-                                ):
-                                    break
-                                result.append(line)
-                            generated_code = "\n".join(result)
-
-                    # Fix missing syntax elements
-                    if generated_code and not generated_code.strip().endswith(":"):
-                        if ":" not in generated_code:
-                            generated_code += ":"
-                    if generated_code and "\n" not in generated_code:
-                        generated_code += "\n    pass"
-
-                    # Fix indentation as last resort
-                    if generated_code:
-                        lines = generated_code.split("\n")
-                        fixed_lines = []
-                        base_indent = None
-                        for line in lines:
-                            if line.strip():
-                                if base_indent is None and line.startswith("def"):
-                                    base_indent = len(line) - len(line.lstrip())
-                                if base_indent is not None:
-                                    stripped = (
-                                        line[base_indent:]
-                                        if line.startswith(" " * base_indent)
-                                        else line
-                                    )
-                                    fixed_lines.append(
-                                        "    " + stripped
-                                        if stripped.strip()
-                                        and not stripped.startswith("def")
-                                        else stripped
-                                    )
-
-                        fixed_code = "\n".join(fixed_lines)
-                        logging.info(f"\nFinal fixed code:\n{fixed_code}\n")
-
-                        # Update the stored solution with the fixed version
-                        generated_solutions[-1] = fixed_code
-
-                        # Try tests on fully fixed code
-                        test_env = create_test_env()
-                        if try_run_tests(
-                            fixed_code,
-                            entry_point,
-                            test_code,
-                            test_env,
-                            error_tracker,
-                            idx,
-                        ):
-                            correct_samples += 1
-                            logging.info("✓ Sample passed all tests after full fixing")
-                            continue
-
-                    logging.info("✗ Sample failed all test attempts")
+                logging.info("✗ Sample failed all test attempts")
 
         except Exception as e:
             error_tracker.add_error(idx, type(e).__name__)
@@ -698,12 +644,6 @@ def try_run_tests(
         return False
 
 
-def assert_wrapper(condition, *args, **kwargs):
-    """Custom assert function that just raises AssertionError on failure."""
-    if not condition:
-        raise AssertionError
-
-
 def calculate_pass_at_k(n_samples: int, n_correct: int, k: int) -> float:
     """
     Calculate pass@k metric from number of samples and correct solutions.
@@ -733,19 +673,17 @@ def main():
     # Model parameters - Using a smaller model for the approximation
     target_model_name = "meta-llama/Llama-3.2-3B"
     approx_model_name = "meta-llama/Llama-3.2-1b"  # Smaller model for draft
-    
+
     # Load dataset
     logging.info("Loading dataset...")
     dataset = get_dataset("openai_humaneval", seed=42)
 
     # Initialize the speculative sampling model
     logging.info("Initializing speculative sampling model...")
-    model = SpeculativeSamplingModel(
+    approx_model, target_model, tokenizer = load_approx_and_target_model_and_tokenizer(
         approx_model_name=approx_model_name,
         target_model_name=target_model_name,
-        stop_sequences=None,
     )
-    tokenizer = model.tokenizer  # Use the tokenizer from the model
 
     # Load entailment model
     logging.info("Loading entailment model...")
@@ -755,7 +693,8 @@ def main():
     logging.info("Starting evaluation...")
 
     aggregate_metrics, detailed_results, error_stats = evaluate_model(
-        model,
+        approx_model,
+        target_model,
         tokenizer,
         dataset,
         num_problems=164,

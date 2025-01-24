@@ -9,6 +9,8 @@ from transformers import (
 import logging
 import os
 import torch.nn.functional as F
+from kvcache_model import KVCacheModel
+from utils import sample, max_fn
 
 
 ### Main model ###
@@ -43,281 +45,6 @@ def load_model_and_tokenizer(model_name):
     return model, tokenizer
 
 
-# TODO: Add a class for speculative sampling model and a class for a chain of thought model
-### Chain of Thought Model ###
-
-
-### Speculative sampling model ###
-from dataclasses import dataclass
-from typing import Optional, Tuple, List, Union
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-import logging
-
-
-@dataclass
-class SpeculativeOutput:
-    sequences: torch.Tensor
-    logits: torch.Tensor
-    scores: List[torch.Tensor]
-
-class SpeculativeSamplingModel:
-    def __init__(
-        self,
-        approx_model_name: str,
-        target_model_name: str,
-        stop_sequences: Union[List[str], str] = None,
-        max_new_tokens: int = 1024,
-    ):
-        logging.info("Loading target model...")
-        self.target_model = AutoModelForCausalLM.from_pretrained(
-            target_model_name, 
-            device_map="auto"
-        )
-        # Wait for target model to load
-        self.target_model.eval()
-        torch.cuda.synchronize()
-        
-        logging.info("Loading approximation model...")
-        self.approx_model = AutoModelForCausalLM.from_pretrained(
-            approx_model_name, 
-            device_map="auto"
-        )
-        # Wait for approx model to load
-        self.approx_model.eval()
-        torch.cuda.synchronize()
-        
-        logging.info("Loading tokenizer...")
-        self.tokenizer = AutoTokenizer.from_pretrained(target_model_name)
-        
-        logging.info("Model loading complete")
-
-        # Set parameters
-        self.max_new_tokens = max_new_tokens
-        self.gamma = 4  # Number of tokens to generate speculatively
-        
-        # Default stop sequences for Python code generation
-        default_stops = ["```", "'''", '"""', "\ndef", "\nclass", "\n#", "\nif __name__"]
-        if stop_sequences:
-            if isinstance(stop_sequences, str):
-                stop_sequences = [stop_sequences]
-            self.stop_sequences = stop_sequences + default_stops
-        else:
-            self.stop_sequences = default_stops
-
-        # Token limit safeguard
-        self.token_limit = self.target_model.config.max_position_embeddings
-        
-        # Configuration parameters
-        self.min_acceptance_threshold = 0.1
-        self.repetition_penalty = 1.2
-        self.max_context_length = 20  # For repetition penalty window
-
-        self._log_model_info()
-
-    def _log_model_info(self):
-        """Log detailed information about both models"""
-        for name, model in [
-            ("Target", self.target_model),
-            ("Approximation", self.approx_model),
-        ]:
-            logging.info(f"\n{name} Model Architecture:")
-            logging.info("Model type: %s", type(model).__name__)
-            logging.info(
-                "Number of parameters: %s",
-                f"{sum(p.numel() for p in model.parameters()):,}",
-            )
-
-            if hasattr(model, "config"):
-                config = model.config
-                logging.info("Configuration:")
-                logging.info("  Hidden size: %s", config.hidden_size)
-                logging.info("  Number of layers: %s", config.num_hidden_layers)
-                logging.info("  Number of attention heads: %s", config.num_attention_heads)
-                logging.info("  Vocabulary size: %s", config.vocab_size)
-
-    def _get_model_probabilities(
-        self,
-        model: AutoModelForCausalLM,
-        input_ids: torch.Tensor,
-        temperature: float = 1.0,
-    ) -> torch.Tensor:
-        """Get next token probabilities from model with improved temperature scaling and repetition penalty."""
-        with torch.no_grad():
-            outputs = model(input_ids)
-            logits = outputs.logits[:, -1, :].clone()  # Clone to avoid in-place modification issues
-            
-            # Apply repetition penalty to recent tokens
-            if input_ids.size(1) > 1:
-                recent_tokens = set(input_ids[0, -self.max_context_length:].tolist())
-                for token_id in recent_tokens:
-                    logits[0, token_id] /= self.repetition_penalty
-            
-            # Improve temperature scaling
-            if temperature != 1.0:
-                logits = logits / max(temperature, 1e-5)  # Prevent division by zero
-                
-            # Apply softmax with better numerical stability
-            probs = F.softmax(logits, dim=-1)
-            
-            # Ensure valid probability distribution
-            probs = probs / probs.sum(dim=-1, keepdim=True)
-            
-            return probs
-
-    def _sample_token(self, probs: torch.Tensor, temperature: float = 1.0) -> torch.Tensor:
-        """Sample a token from the probability distribution with temperature."""
-        if temperature == 0:
-            # Greedy sampling
-            return torch.argmax(probs, dim=-1, keepdim=True)
-        else:
-            # Temperature sampling
-            return torch.multinomial(probs, num_samples=1)
-
-    def _check_stop_sequence(self, text: str, input_length: int) -> bool:
-        """Check if any stop sequence is present in the generated portion."""
-        generated_text = text[input_length:]
-        return any(stop_seq in generated_text for stop_seq in self.stop_sequences)
-
-    @torch.no_grad()
-    def generate(
-        self, 
-        input_text: str, 
-        temperature: float = 0.6, 
-        return_full: bool = False,
-        min_length: int = 50  # Minimum generation length before checking stop sequences
-    ):
-        """Generate text using speculative sampling with improved controls."""
-        logging.info("Starting generation with input text: %s", input_text)
-        logging.info("Temperature: %s", temperature)
-
-        # Tokenize input
-        inputs = self.tokenizer(input_text, return_tensors="pt")
-        input_ids = inputs["input_ids"]
-        n_input_tokens = input_ids.size(1)
-        
-        # Initialize outputs
-        outputs = SpeculativeOutput(
-            sequences=input_ids.clone(),
-            logits=torch.tensor([]),
-            scores=[]
-        )
-        
-        generation_step = 0
-        consecutive_rejections = 0
-        max_consecutive_rejections = 5
-
-        while (outputs.sequences.shape[1] < n_input_tokens + self.max_new_tokens and
-               consecutive_rejections < max_consecutive_rejections):
-            
-            generation_step += 1
-            logging.info("\nGeneration Step %d:", generation_step)
-            
-            prefix_len = outputs.sequences.shape[1]
-            current_text = self.tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
-            
-            # Generate draft sequence
-            draft_sequence = outputs.sequences.clone()
-            draft_probs = []
-            draft_tokens = []
-
-            logging.info("Generating draft sequence...")
-            
-            for i in range(self.gamma):
-                probs = self._get_model_probabilities(self.approx_model, draft_sequence, temperature)
-                next_token = self._sample_token(probs, temperature)
-                draft_sequence = torch.cat((draft_sequence, next_token), dim=1)
-                draft_probs.append(probs)
-                draft_tokens.append(next_token)
-                
-                token_text = self.tokenizer.decode(next_token[0])
-                logging.info("Draft token %d: %s (token_id: %d)", 
-                           i+1, token_text, next_token.item())
-
-            # Process with target model
-            target_probs = []
-            accepted_tokens = []
-
-            for i in range(self.gamma):
-                current_seq = draft_sequence[:, :prefix_len + i + 1]
-                target_prob = self._get_model_probabilities(self.target_model, current_seq, temperature)
-                target_probs.append(target_prob)
-
-                j = draft_sequence[:, prefix_len + i]
-                r = torch.rand(1)
-
-                target_token_prob = target_prob[0, j]
-                approx_token_prob = draft_probs[i][0, j]
-                
-                token_text = self.tokenizer.decode(j)
-                logging.info("Token %d (%s):", i+1, token_text)
-                logging.info("  Target probability: %.4f", target_token_prob.item())
-                logging.info("  Approx probability: %.4f", approx_token_prob.item())
-                
-                # Improved acceptance criterion
-                acceptance_ratio = target_token_prob / (approx_token_prob + 1e-10)
-                if acceptance_ratio > self.min_acceptance_threshold:
-                    acceptance_prob = min(1.0, acceptance_ratio)
-                    if r < acceptance_prob:
-                        accepted_tokens.append(j)
-                        consecutive_rejections = 0
-                        logging.info("  Token accepted (ratio: %.4f)", acceptance_ratio)
-                        continue
-                
-                logging.info("  Token rejected (ratio: %.4f)", acceptance_ratio)
-                consecutive_rejections += 1
-                break
-
-            # Update sequence
-            if accepted_tokens:
-                accepted_tensor = torch.cat(accepted_tokens).unsqueeze(0)
-                outputs.sequences = torch.cat((outputs.sequences, accepted_tensor), dim=1)
-                outputs.scores.extend(target_probs[:len(accepted_tokens)])
-                logging.info("Accepted %d tokens", len(accepted_tokens))
-
-            # Sample next token if needed
-            if len(accepted_tokens) < self.gamma:
-                target_prob = target_probs[len(accepted_tokens)]
-                next_token = self._sample_token(target_prob, temperature)
-                outputs.sequences = torch.cat((outputs.sequences, next_token), dim=1)
-                outputs.scores.append(target_probs[len(accepted_tokens)])
-                token_text = self.tokenizer.decode(next_token[0])
-                logging.info("Sampled new token from target model: %s", token_text)
-
-            # Check current output
-            current_output = self.tokenizer.decode(outputs.sequences[0], skip_special_tokens=True)
-            logging.info("\nCurrent full output: %s", current_output)
-            
-            # Only check stop sequences after minimum length
-            if (len(current_output) - len(input_text)) > min_length:
-                if self._check_stop_sequence(current_output, len(input_text)):
-                    logging.info("Stop sequence found. Stopping generation.")
-                    break
-
-        return self._process_output(current_output, input_text, outputs, return_full)
-
-    def _process_output(
-        self,
-        generated_text: str,
-        input_text: str,
-        outputs: SpeculativeOutput,
-        return_full: bool,
-    ):
-        """Process the generated output and return appropriate format."""
-        if return_full:
-            return generated_text
-
-        # Extract generated portion
-        generated_portion = generated_text[len(input_text):].strip()
-        logging.info("Generated portion: %s", generated_portion)
-
-        # Compute log probabilities for generated tokens
-        log_probs = []
-        for score in outputs.scores:
-            log_probs.append(torch.log(score).max().item())
-
-        return generated_portion, log_probs
-
 ### Entailment Model ###
 class BaseEntailment:
     """Base class for entailment models."""
@@ -346,3 +73,103 @@ class EntailmentDeberta(BaseEntailment):
             "neutral": probs[1].item(),
             "entailment": probs[2].item(),
         }
+
+
+### Speculative sampling ###
+@torch.no_grad()
+def speculative_sampling(
+    prefix: torch.Tensor,
+    approx_model: torch.nn.Module,
+    target_model: torch.nn.Module,
+    max_len: int,
+    gamma: int = 4,
+    temperature: float = 1,
+    top_k: int = 0,
+    top_p: float = 0,
+    verbose: bool = False,
+    random_seed: int = None,
+) -> tuple[torch.Tensor, list[float]]:  # Modified return type to include log probs
+    """
+    Google version Speculative Sampling with log probability tracking.
+    Returns both the generated sequence and list of token log probabilities.
+    """
+    seq_len = prefix.shape[1]
+    T = seq_len + max_len
+
+    assert prefix.shape[0] == 1, "input batch size must be 1"
+    assert approx_model.device == target_model.device
+
+    device = target_model.device
+
+    approx_model_cache = KVCacheModel(approx_model, temperature, top_k, top_p)
+    target_model_cache = KVCacheModel(target_model, temperature, top_k, top_p)
+
+    # Initialize list to store token log probabilities
+    token_log_probs = []
+
+    while prefix.shape[1] < T:
+        prefix_len = prefix.shape[1]
+        x = approx_model_cache.generate(prefix, gamma)
+        _ = target_model_cache.generate(x, 1)
+
+        n = prefix_len + gamma - 1
+
+        for i in range(gamma):
+            if random_seed:
+                torch.manual_seed(random_seed)
+            r = torch.rand(1, device=device)
+            j = x[:, prefix_len + i]
+
+            # Use normalized probabilities for acceptance/rejection
+            target_prob = target_model_cache._prob_history[:, prefix_len + i - 1, j]
+            approx_prob = approx_model_cache._prob_history[:, prefix_len + i - 1, j]
+
+            if r > target_prob / approx_prob:
+                n = prefix_len + i - 1
+                break
+
+            # Calculate log probability using log_softmax on raw logits
+            logits = target_model_cache._logits_history[:, prefix_len + i - 1, :]
+            log_probs = F.log_softmax(logits, dim=-1)
+            token_log_prob = log_probs[0, j].item()
+            token_log_probs.append(token_log_prob)
+
+            if verbose:
+                print(f"approx guess accepted {j[0]}")
+                print(f"log probability: {token_log_prob:.4f}")
+
+        prefix = x[:, : n + 1]
+        approx_model_cache.rollback(n + 1)
+
+        if n < prefix_len + gamma - 1:
+            # Rejection case
+            logits = target_model_cache._logits_history[:, n, :]
+            log_probs = F.log_softmax(logits, dim=-1)
+            t = sample(
+                max_fn(
+                    target_model_cache._prob_history[:, n, :]
+                    - approx_model_cache._prob_history[:, n, :]
+                )
+            )
+            token_log_prob = log_probs[0, t].item()
+            token_log_probs.append(token_log_prob)
+            target_model_cache.rollback(n + 1)
+        else:
+            # All tokens accepted
+            logits = target_model_cache._logits_history[:, -1, :]
+            log_probs = F.log_softmax(logits, dim=-1)
+            t = sample(target_model_cache._prob_history[:, -1, :])
+            token_log_prob = log_probs[0, t].item()
+            token_log_probs.append(token_log_prob)
+
+            target_model_cache.rollback(n + 2)
+
+        prefix = torch.cat((prefix, t), dim=1)
+
+    return prefix, token_log_probs
+
+def load_approx_and_target_model_and_tokenizer(approx_model_name, target_model_name):
+    approx_model = load_model(approx_model_name)
+    target_model = load_model(target_model_name)
+    tokenizer = load_tokenizer(target_model_name)
+    return approx_model, target_model, tokenizer
