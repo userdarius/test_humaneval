@@ -25,6 +25,8 @@ from scores import (
 import logging
 import gc
 import os
+import sys
+
 
 logging.basicConfig(level=logging.INFO)
 
