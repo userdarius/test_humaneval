@@ -460,7 +460,6 @@ def evaluate_problem(
                 temperature=0.6,
                 top_k=0,
                 top_p=0,
-                verbose=False,
             )
 
             # Decode the generated tokens into text
