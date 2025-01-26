@@ -36,23 +36,12 @@ class KVCacheModel:
     ) -> torch.Tensor:
         if self._past_key_values is None:
             assert self._prob_history is None
-            # Add return_dict=True and use_cache=True to ensure proper output format
-            outputs = self._model(
-                input_ids,
-                use_cache=True,
-                return_dict=True,
-            )
+            outputs = self._model(input_ids)
 
-            # Add error checking
-            if not hasattr(outputs, "logits"):
-                raise ValueError(
-                    f"Model outputs don't have logits. Got type: {type(outputs)}"
-                )
-            if not hasattr(outputs, "past_key_values"):
-                raise ValueError("Model outputs don't have past_key_values")
-
-            # Rest remains the same
+            # Store raw logits
             self._logits_history = outputs.logits
+
+            # Calculate normalized probabilities
             self._prob_history = outputs.logits.clone()
             for i in range(self._prob_history.shape[-2]):
                 self._prob_history[:, i, :] = norm_logits(
@@ -65,7 +54,7 @@ class KVCacheModel:
             self._past_key_values = outputs.past_key_values
             last_q = self._prob_history[:, -1, :]
         else:
-            # Also update the cached case
+            # Similar modification for cached case
             cached_len = 0
             for kv in self._past_key_values:
                 k, v = kv
@@ -76,10 +65,7 @@ class KVCacheModel:
                 last_input_id = torch.unsqueeze(last_input_id, 0)
 
             outputs = self._model(
-                last_input_id,
-                past_key_values=self._past_key_values,
-                use_cache=True,
-                return_dict=True,
+                last_input_id, past_key_values=self._past_key_values, use_cache=True
             )
 
             not_cached_logits = outputs.logits
