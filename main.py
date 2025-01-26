@@ -21,7 +21,7 @@ import timeout_decorator
 import ast
 from model import (
     CodeAwareDeberta,
-    EntailmentDeberta,
+    EntailmentGPT4,
     generate_branching_responses,
     load_model_and_tokenizer,
 )
@@ -900,7 +900,7 @@ def main():
         # Load models
         logging.info("Loading models...")
         model, tokenizer = load_model_and_tokenizer(model_name)
-        entailment_model = EntailmentDeberta()
+        entailment_model = EntailmentGPT4(api_key="")
 
         # Run evaluation
         logging.info("Starting evaluation...")

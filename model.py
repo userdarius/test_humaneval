@@ -11,6 +11,8 @@ import os
 import torch.nn.functional as F
 from typing import Optional, List, Dict, Tuple
 import re
+import openai
+from tenacity import retry, stop_after_attempt, wait_random_exponential
 
 
 ### Main model ###
@@ -231,6 +233,99 @@ class CodeAwareDeberta(BaseEntailment):
                 "entailment": probs[2].item(),
             }
 
+
+class EntailmentGPT4(BaseEntailment):
+    """Entailment model using OpenAI's GPT-4."""
+
+    def __init__(self, api_key: str, model: str = "gpt-4o"):
+        """
+        Initialize the GPT-4 entailment model.
+
+        Args:
+            api_key: OpenAI API key
+            model: OpenAI model to use (default: gpt-4o)
+        """
+        self.client = openai.OpenAI(api_key=api_key)
+        self.model = model
+
+        # System prompt to frame the task
+        self.system_prompt = """You are an entailment analysis system. Given two pieces of text, 
+        determine if the second text is entailed by, contradicts, or is neutral with respect to the first text.
+        Respond only with one of these exact words: "entailment", "contradiction", or "neutral"."""
+
+    @retry(wait=wait_random_exponential(min=1, max=60), stop=stop_after_attempt(3))
+    def _get_completion(self, prompt: str) -> str:
+        """
+        Get completion from OpenAI API with retry logic.
+
+        Args:
+            prompt: The prompt to send to the API
+
+        Returns:
+            The model's response
+        """
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": prompt},
+        ]
+
+        response = self.client.chat.completions.create(
+            model=self.model,
+            messages=messages,
+            temperature=0,
+            max_tokens=1,
+        )
+
+        return response.choices[0].message.content.strip().lower()
+
+    def check_implication(
+        self, text1: str, text2: str, *args, **kwargs
+    ) -> Dict[str, float]:
+        """
+        Check the entailment relationship between two pieces of text.
+
+        Args:
+            text1: The premise text
+            text2: The hypothesis text
+
+        Returns:
+            Dictionary with probabilities for contradiction, neutral, and entailment
+        """
+        prompt = f"""Premise: {text1}
+        Hypothesis: {text2}
+        
+        Is the hypothesis entailed by, contradictory to, or neutral with respect to the premise?
+        Answer with exactly one word: entailment, contradiction, or neutral."""
+
+        try:
+            result = self._get_completion(prompt)
+
+            # Convert categorical response to probability distribution
+            probabilities = {
+                "contradiction": 1.0 if result == "contradiction" else 0.0,
+                "neutral": 1.0 if result == "neutral" else 0.0,
+                "entailment": 1.0 if result == "entailment" else 0.0,
+            }
+
+            return probabilities
+
+        except Exception as e:
+            print(f"Error in GPT-4 API call: {str(e)}")
+            # Return uniform distribution in case of error
+            return {"contradiction": 0.33, "neutral": 0.33, "entailment": 0.33}
+
+
+# Example usage:
+"""
+entailment_model = EntailmentGPT4(api_key="your-api-key")
+result = entailment_model.check_implication(
+    "The sun rises in the east.",
+    "The sun sets in the west."
+)
+print(result)
+"""
+
+
 ### Branching Model ###
 def get_topk_next_tokens(
     model: AutoModelForCausalLM, inputs: Dict[str, torch.Tensor], num_branches: int
@@ -274,7 +369,9 @@ Here's the solution:
 """
 
     # Tokenize the prompt
-    inputs = tokenizer(formatted_prompt, return_tensors="pt", truncation=True, max_length=2048)
+    inputs = tokenizer(
+        formatted_prompt, return_tensors="pt", truncation=True, max_length=2048
+    )
     inputs = {k: v.to(model.device) for k, v in inputs.items()}
 
     # Get initial top k tokens
@@ -292,7 +389,7 @@ Here's the solution:
     responses = []
     for k in range(num_branches):
         print(f"\nStarting branch {k+1}")
-        
+
         # Create a new branch starting with the k-th most likely token
         branch_inputs = {
             "input_ids": torch.cat(
@@ -304,7 +401,7 @@ Here's the solution:
                     torch.ones((1, 1), device=inputs["attention_mask"].device),
                 ],
                 dim=1,
-            )
+            ),
         }
 
         # Generate the rest of the response for this branch
@@ -317,6 +414,7 @@ Here's the solution:
 
     print("\nAll branches complete\n")
     return responses
+
 
 def generate_single_branch(
     model: AutoModelForCausalLM,
@@ -340,7 +438,7 @@ def generate_single_branch(
 
         # Decode current state for checking
         current_text = tokenizer.decode(response_tokens + [next_token])
-        
+
         # Stop if we've completed a function definition
         if "\n\n" in current_text and "def" in current_text:
             last_func_end = current_text.rfind("\n\n")
@@ -348,9 +446,10 @@ def generate_single_branch(
                 break
 
         # Stop on specific tokens that might indicate end of function
-        if any(stop in next_token_text for stop in [
-            "class", "if __name__", "print(", "test_", "Test"
-        ]):
+        if any(
+            stop in next_token_text
+            for stop in ["class", "if __name__", "print(", "test_", "Test"]
+        ):
             break
 
         # Regular token processing
@@ -359,7 +458,9 @@ def generate_single_branch(
         prob_diffs.append(prob_diff)
 
         # Update inputs for next iteration
-        next_token_tensor = torch.tensor([[next_token]], device=inputs["input_ids"].device)
+        next_token_tensor = torch.tensor(
+            [[next_token]], device=inputs["input_ids"].device
+        )
         inputs["input_ids"] = torch.cat([inputs["input_ids"], next_token_tensor], dim=1)
         inputs["attention_mask"] = torch.cat(
             [
@@ -372,6 +473,8 @@ def generate_single_branch(
     # Convert token IDs to text
     generated_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
     avg_prob_diff = sum(prob_diffs) / len(prob_diffs) if prob_diffs else 0
-    normalized_logprob = sequence_logprob / len(response_tokens) if response_tokens else 0
+    normalized_logprob = (
+        sequence_logprob / len(response_tokens) if response_tokens else 0
+    )
 
     return generated_text.strip(), avg_prob_diff, normalized_logprob
