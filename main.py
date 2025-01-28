@@ -662,9 +662,37 @@ def calculate_aggregate_metrics(results):
                 if r["semantic_metrics"]
             ]
         ),
+        "mean_reverse_alignment": np.mean(
+            [
+                r["semantic_metrics"].get("reverse_alignment", 0)
+                for r in results
+                if r["semantic_metrics"]
+            ]
+        ),
         "mean_bidirectional_alignment": np.mean(
             [
                 r["semantic_metrics"].get("bidirectional_alignment", 0)
+                for r in results
+                if r["semantic_metrics"]
+            ]
+        ),
+        "mean_semantic_diversity": np.mean(
+            [
+                r["semantic_metrics"].get("semantic_diversity", 0)
+                for r in results
+                if r["semantic_metrics"]
+            ]
+        ),
+        "mean_majority_solution_frequency": np.mean(
+            [
+                r["semantic_metrics"].get("majority_solution_frequency", 0)
+                for r in results
+                if r["semantic_metrics"]
+            ]
+        ),
+        "mean_cluster_size_std": np.mean(
+            [
+                r["semantic_metrics"].get("cluster_size_std", 0)
                 for r in results
                 if r["semantic_metrics"]
             ]
@@ -945,6 +973,18 @@ def main():
         )
         logging.info(
             f"Mean canonical alignment: {aggregate_metrics['mean_canonical_alignment']:.2f}"
+        )
+        logging.info(
+            f"Mean bidirectional alignment: {aggregate_metrics['mean_bidirectional_alignment']:.2f}"
+        )
+        logging.info(
+            f"Mean solution length: {aggregate_metrics['mean_solution_length']:.2f}"
+        )
+        logging.info(
+            f"Solution length std: {aggregate_metrics['solution_length_std']:.2f}"
+        )
+        logging.info(
+            f"Successful ratio: {aggregate_metrics['successful_ratio']:.2f}"
         )
         logging.info(f"\nError Statistics:")
         logging.info(json.dumps(error_stats, indent=2))
