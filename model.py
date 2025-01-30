@@ -277,7 +277,6 @@ def generate_single_branch(
 
         next_token = topk_indices[0, 0].item()
         next_token_text = tokenizer.decode([next_token])
-        sequence_logprob += topk_logprobs[0, 0].item()
 
         # Decode current state for checking
         current_text = tokenizer.decode(response_tokens + [next_token])
@@ -294,6 +293,9 @@ def generate_single_branch(
             for stop in ["class", "if __name__", "print(", "test_", "Test"]
         ):
             break
+
+        # Add the log probability of the next token to the sequence log probability
+        sequence_logprob += topk_logprobs[0, 0].item()
 
         # Regular token processing
         prob_diff = (topk_values[0, 0] - topk_values[0, 1]).item()
@@ -316,8 +318,6 @@ def generate_single_branch(
     # Convert token IDs to text
     generated_text = tokenizer.decode(response_tokens, skip_special_tokens=True)
     avg_prob_diff = sum(prob_diffs) / len(prob_diffs) if prob_diffs else 0
-    normalized_logprob = (
-        sequence_logprob / len(response_tokens) if response_tokens else 0
-    )
+    
 
-    return generated_text.strip(), avg_prob_diff, normalized_logprob
+    return generated_text.strip(), avg_prob_diff, sequence_logprob
