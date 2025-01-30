@@ -496,11 +496,10 @@ def evaluate_model(
             if hasattr(outputs, "scores") and outputs.scores:
                 scores = outputs.scores
                 # For each sequence in the batch
-                for batch_idx in range(len(outputs.sequences)):
+                for batch_idx in enumerate(outputs.sequences):
                     error_tracker.increment_total(idx)
                     generated_ids = outputs.sequences[batch_idx]
-                    log_prob = 0
-                    sequence_length = 0
+                    sequence_logprob = 0.0
 
                     # Get indices of non-padding tokens
                     non_pad_indices = (
@@ -508,6 +507,7 @@ def evaluate_model(
                     )
                     if len(non_pad_indices) > 0:
                         start_idx = non_pad_indices[0].item()
+                        current_text = ""
 
                         for step, score in enumerate(scores):
                             if isinstance(score, tuple):
@@ -522,37 +522,36 @@ def evaluate_model(
                                 if token == tokenizer.pad_token_id:
                                     continue
 
+                                # Decode current token and update current text
+                                token_text = tokenizer.decode([token])
+                                current_text += token_text
+
+                                # Check stopping conditions similar to branching version
+                                if "\n\n" in current_text and "def" in current_text:
+                                    last_func_end = current_text.rfind("\n\n")
+                                    if last_func_end > current_text.rfind("def"):
+                                        break
+
+                                if any(
+                                    stop in token_text
+                                    for stop in [
+                                        "class",
+                                        "if __name__",
+                                        "print(",
+                                        "test_",
+                                        "Test",
+                                    ]
+                                ):
+                                    break
+
                                 # Get probability for this specific sequence's token
-                                log_prob_step = step_log_probs[batch_idx, token].item()
-
-                                # Weight important tokens more heavily
-                                if token in [
-                                    tokenizer.convert_tokens_to_ids(t)
-                                    for t in ["return", "while", "if", "for"]
-                                ]:
-                                    log_prob_step *= (
-                                        1.2  # Boost probability for structural tokens
-                                    )
-
-                                if not np.isfinite(log_prob_step):
-                                    log_prob_step = -10.0
-
-                                log_prob += log_prob_step
-                                sequence_length += 1
-
-                        if sequence_length > 0:
-                            log_prob = log_prob / sequence_length
-                            # Remove this scaling factor as it's reducing the differences
-                            # log_prob = log_prob / 5.0
-
-                        # Use a wider range for clipping
-                        log_prob = np.clip(log_prob, -10.0, 0.0)
-                    else:
-                        log_prob = 0.0
+                                sequence_logprob += step_log_probs[
+                                    batch_idx, token
+                                ].item()
 
                     response = tokenizer.decode(generated_ids, skip_special_tokens=True)
                     raw_solutions.append(response)
-                    solution_log_probs.append(log_prob)
+                    solution_log_probs.append(sequence_logprob)
 
                     # Extract and fix the function
                     generated_code = ""
